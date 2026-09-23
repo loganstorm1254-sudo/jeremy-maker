@@ -1,0 +1,2240 @@
+/*
+ * Jeremy Bot 2.6.50 — SELECT ALL, COPY, PASTE into a new Arduino sketch, UPLOAD.
+ * Board: ESP32 Dev Module (or DOIT ESP32 DEVKIT V1). Libs: Adafruit GFX, Adafruit SH110X, Adafruit BusIO.
+ * USB Studio: eyes, corners, switch program. Switch ON runs switch text + lights.
+ */
+
+#include <Wire.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <Preferences.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>
+#include <math.h>
+#include <string.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+
+static const char* PAIRING_URL = "http://jeremy:8080";
+static const byte DNS_PORT = 53;
+
+Adafruit_SH1106G display(128, 64, &Wire, -1);
+WebServer server(8080);
+DNSServer dnsServer;
+Preferences prefs;
+
+const float BASE = 30;
+const float GROW = 48;
+const float OVER = 56;
+float size = BASE;
+
+int centerY = 32;
+int leftX = 40;
+int rightX = 88;
+
+float ox = 0, oy = 0;
+float tx = 0, ty = 0;
+const float MOVE_EASE = 0.25;
+float driftAngle = 0;
+
+const int bootPin = 0;
+// 2-pin LEDs (your diagram): LONG=anode pin, SHORT=cathode pin — no GND
+const int blueLED = 2;     // BLUE long  -> D2
+const int blueLEDK = 23;   // BLUE short -> D23
+const int redLED = 18;     // RED long   -> D18
+const int redLEDK = 5;     // RED short  -> D5
+const int yellowLED = 19;  // YELLOW long  -> D19
+const int yellowLEDK = 13; // YELLOW short -> D13
+const int funButton = 4;
+const int powerPin = 16;
+const int boomPin = 17;
+const int switchPin = 25;  // power switch: D25 <-> GND
+const unsigned long BOOM_COOLDOWN_MS = 2500;
+const unsigned long BOOM_PULSE_MS = 80;
+unsigned long lastBoomMs = 0;
+
+bool ledOverride = false;      // blue LED panel override
+bool ledOverrideOn = false;
+bool redOverride = false;
+bool redOverrideOn = false;
+bool yellowOverride = false;
+bool yellowOverrideOn = false;
+
+// Full-blast PWM — mega bright for panel + effects
+const int LED_PWM_BITS = 8;
+const int LED_PWM_MAX = 255;
+const int LED_PWM_ON = 255;  // 100% — as bright as the pins can go
+const int LED_CH_BLUE = 0;
+const int LED_CH_RED = 1;
+const int LED_CH_YELLOW = 2;
+const unsigned long LED_AUTO_OFF_MS = 12000;
+unsigned long ledHoldUntil = 0;
+
+void showSwitchScreen(); // defined later
+bool switchIsOn(); // defined later
+void serviceUsbProgrammer(); // defined later
+void delayServicingUsb(unsigned long ms);
+void applySwitchLeds();
+void loadSwitchProgram();
+void saveSwitchProgram();
+void loadLookProgram();
+void saveLookProgram();
+
+// Switch flick program (editable from Jeremy Maker over USB serial)
+// Must be above applySwitchLeds() — Arduino does not auto-declare globals
+char switchScreenText[33] = "JEREMY CO";
+bool switchLedBlue = true;
+bool switchLedRed = true;
+bool switchLedYellow = true;
+String usbLineBuf;
+
+// Idle face look (eyes + corner labels) — edited in Jeremy Studio
+uint8_t eyeShape = 2;   // 0 circle 1 square 2 soft 3 wide 4 tall 5 diamond
+uint8_t pupilStyle = 1; // 0 none 1 dot 2 ring 3 bar 4 cross 5 spark
+uint8_t pupilSize = 4;
+char cornerTL[9] = "";
+char cornerTR[9] = "";
+char cornerBL[9] = "";
+char cornerBR[9] = "";
+bool lookShowUptime = true;
+
+void touchLedWatchdog() {
+  ledHoldUntil = millis() + LED_AUTO_OFF_MS;
+}
+
+
+void setupLedPwm() {
+  // Higher freq = smoother; full duty = max brightness
+  ledcSetup(LED_CH_BLUE, 20000, LED_PWM_BITS);
+  ledcSetup(LED_CH_RED, 20000, LED_PWM_BITS);
+  ledcSetup(LED_CH_YELLOW, 20000, LED_PWM_BITS);
+  ledcAttachPin(blueLED, LED_CH_BLUE);
+  ledcAttachPin(redLED, LED_CH_RED);
+  ledcAttachPin(yellowLED, LED_CH_YELLOW);
+  ledcWrite(LED_CH_BLUE, 0);
+  ledcWrite(LED_CH_RED, 0);
+  ledcWrite(LED_CH_YELLOW, 0);
+  pinMode(blueLEDK, OUTPUT);
+  pinMode(redLEDK, OUTPUT);
+  pinMode(yellowLEDK, OUTPUT);
+  digitalWrite(blueLEDK, LOW);
+  digitalWrite(redLEDK, LOW);
+  digitalWrite(yellowLEDK, LOW);
+}
+
+void setLedPair(int pwmCh, int cathode, bool on) {
+  pinMode(cathode, OUTPUT);
+  digitalWrite(cathode, LOW); // always sink when using 2-pin LED drive
+  if (on) {
+    ledcWrite(pwmCh, LED_PWM_ON);
+    touchLedWatchdog();
+  } else {
+    ledcWrite(pwmCh, 0);
+  }
+}
+
+void setBlue(bool on) { setLedPair(LED_CH_BLUE, blueLEDK, on); }
+void setRed(bool on) { setLedPair(LED_CH_RED, redLEDK, on); }
+void setYellow(bool on) { setLedPair(LED_CH_YELLOW, yellowLEDK, on); }
+
+void setAllLeds(bool on) {
+  ledOverride = redOverride = yellowOverride = true;
+  ledOverrideOn = redOverrideOn = yellowOverrideOn = on;
+  setBlue(on);
+  setRed(on);
+  setYellow(on);
+}
+
+void applySwitchLeds() {
+  ledOverride = redOverride = yellowOverride = true;
+  ledOverrideOn = switchLedBlue;
+  redOverrideOn = switchLedRed;
+  yellowOverrideOn = switchLedYellow;
+  setBlue(switchLedBlue);
+  setRed(switchLedRed);
+  setYellow(switchLedYellow);
+}
+
+// Blocks until switch opens: programmed screen text + selected LEDs
+void holdSwitchProgramUntilOff() {
+  applySwitchLeds();
+  showSwitchScreen();
+  while (digitalRead(switchPin) == LOW) {
+    serviceUsbProgrammer();
+    applySwitchLeds();
+    showSwitchScreen();
+    delay(40);
+  }
+  setAllLeds(false);
+  clearLedOverrides();
+}
+
+void blazeAllLeds(bool on) {
+  // Effects: ALWAYS hit blue + red + yellow together
+  setAllLeds(on);
+}
+
+void enforceLedSafety(unsigned long now) {
+  digitalWrite(boomPin, LOW); // never leave boom trigger stuck
+  if (ledHoldUntil == 0) return;
+  if (now < ledHoldUntil) return;
+  if (ledOverride || redOverride || yellowOverride) {
+    ledOverride = redOverride = yellowOverride = false;
+    ledOverrideOn = redOverrideOn = yellowOverrideOn = false;
+    setBlue(false);
+    setRed(false);
+    setYellow(false);
+  }
+  ledHoldUntil = 0;
+}
+
+// Effect strobe: all three LEDs mega-bright together (not blue-only chase)
+void pulseAllLeds(unsigned long elapsed, unsigned long stepMs) {
+  bool on = ((elapsed / stepMs) % 2) == 0;
+  blazeAllLeds(on);
+}
+
+void clearLedOverrides() {
+  ledOverride = redOverride = yellowOverride = false;
+  ledOverrideOn = redOverrideOn = yellowOverrideOn = false;
+  setBlue(false);
+  setRed(false);
+  setYellow(false);
+  ledHoldUntil = 0;
+}
+
+void testLedsBoot() {
+  // Short blinks only — do not hold all LEDs on (heat)
+  setBlue(true); delay(120); setBlue(false); delay(60);
+  setRed(true); delay(120); setRed(false); delay(60);
+  setYellow(true); delay(120); setYellow(false);
+  ledHoldUntil = 0;
+}
+
+unsigned long pressStart = 0;
+unsigned long popTime = 0;
+unsigned long startupTime = 0;
+const unsigned long STARTUP_DELAY = 3500;
+const unsigned long VERSION_DELAY = 2000;
+const unsigned long CODE_SPAM_DELAY = 2000;
+
+unsigned long lastPressTime = 0;
+bool waitingSecondClick = false;
+const unsigned long DOUBLE_CLICK_WINDOW = 400;
+
+bool forcePop = false;
+
+enum State {
+  NORMAL,
+  HOLDING,
+  STRETCH,
+  EXPLODE,
+  REBUILD,
+  INFO_SCREEN,
+  PAIRING,
+  SHOW_OVERLAY,
+  PLAY_ANIM
+};
+State state = PAIRING;
+State stateBeforeOverlay = NORMAL;
+
+const char* LABEL_TEXT = "2.6.50";
+const char* FIRMWARE_VERSION = "2.6.50";
+
+char wifiSsid[24];
+char pairingCode[8];
+char panelCode[8];
+bool isPaired = false;
+bool panelCodeActive = false;
+bool needPairingScreen = true;
+
+// Timed OLED overlay (text or named image)
+char overlayText[48];
+char overlayImage[16];
+unsigned long overlayUntil = 0;
+bool overlayIsImage = false;
+bool overlayIsBitmap = false;
+static const int OLED_BMP_BYTES = 1024; // 128x64 / 8
+uint8_t overlayBitmap[OLED_BMP_BYTES];
+
+// Named animation playback
+enum AnimKind {
+  ANIM_NONE,
+  ANIM_LED_STROBE,
+  ANIM_MIDNIGHT_BURST,   // fireworks / "new cycle" salute
+  ANIM_SPARK_SALUTE,
+  ANIM_ORBIT_BLINK,
+  ANIM_EYE_WIGGLE,
+  ANIM_CONFETTI_POP,
+  ANIM_BOOM
+};
+AnimKind activeAnim = ANIM_NONE;
+unsigned long animStart = 0;
+unsigned long animUntil = 0;
+
+struct Spark {
+  float x, y, vx, vy;
+  int life;
+  bool alive;
+};
+static const int MAX_SPARKS = 28;
+Spark sparks[MAX_SPARKS];
+
+#define __B(a,b) ((a)+(((b)-(a))*0.2))
+#define __C(a,b,c) ((a)<(b)?(b):((a)>(c)?(c):(a)))
+#define __F(x) for(int _=0;_<x;_++)
+
+// 16x16 monochrome icons (MSB left), PROGMEM
+static const uint8_t ICON_STAR[] PROGMEM = {
+  0x01,0x00,0x01,0x00,0x01,0x00,0x41,0x04,0x23,0x88,0x1F,0xF0,0x0F,0xE0,
+  0x07,0xC0,0x0F,0xE0,0x1B,0xB0,0x31,0x18,0x60,0x0C,0x40,0x04,0x00,0x00,0x00,0x00,0x00,0x00
+};
+static const uint8_t ICON_HEART[] PROGMEM = {
+  0x00,0x00,0x0C,0x60,0x1E,0xF0,0x3F,0xF8,0x7F,0xFC,0x7F,0xFC,0x7F,0xFC,
+  0x3F,0xF8,0x1F,0xF0,0x0F,0xE0,0x07,0xC0,0x03,0x80,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+};
+static const uint8_t ICON_BOLT[] PROGMEM = {
+  0x00,0x80,0x01,0x80,0x03,0x00,0x07,0x00,0x0E,0x00,0x1F,0xF0,0x01,0xE0,
+  0x03,0xC0,0x07,0x80,0x0F,0x00,0x06,0x00,0x0C,0x00,0x18,0x00,0x10,0x00,0x00,0x00,0x00,0x00
+};
+static const uint8_t ICON_FACE[] PROGMEM = {
+  0x0F,0xE0,0x1F,0xF0,0x3F,0xF8,0x7B,0xDC,0x7B,0xDC,0x7F,0xFC,0x7F,0xFC,
+  0x7F,0xFC,0x76,0x6C,0x73,0xCC,0x3F,0xF8,0x1F,0xF0,0x0F,0xE0,0x00,0x00,0x00,0x00,0x00,0x00
+};
+static const uint8_t ICON_BURST[] PROGMEM = {
+  0x01,0x00,0x11,0x10,0x09,0x20,0x05,0x40,0xE3,0x8E,0x1F,0xF0,0x0F,0xE0,
+  0x3F,0xF8,0x0F,0xE0,0x1F,0xF0,0xE3,0x8E,0x05,0x40,0x09,0x20,0x11,0x10,0x01,0x00,0x00,0x00
+};
+
+// Compact auth + control UI served from the bot
+static const char INDEX_HTML[] PROGMEM = R"HTML(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Jeremy</title>
+<style>
+:root{--bg:#071018;--fg:#d8f3ec;--muted:#7aa39a;--accent:#2dd4bf;--bad:#fb7185}
+*{box-sizing:border-box}body{margin:0;min-height:100dvh;font:15px/1.45 ui-monospace,Menlo,monospace;color:var(--fg);
+text-transform:uppercase;letter-spacing:.04em;
+background:radial-gradient(ellipse at 20% 10%,rgba(34,197,168,.18),transparent 45%),linear-gradient(165deg,#071018,#0c1a22 48%,#08131a)}
+main{max-width:440px;margin:0 auto;padding:40px 22px}
+h1{font:600 48px/1 system-ui,sans-serif;margin:0 0 8px;letter-spacing:.02em}
+h2{font:600 18px/1.2 system-ui,sans-serif;margin:22px 0 10px;color:var(--fg)}
+p{color:var(--muted);margin:0 0 16px}label{display:block;margin:0 0 8px;color:var(--fg)}
+input,select{width:100%;height:44px;border:1px solid #234;border-radius:10px;background:#0a151c;color:var(--fg);
+padding:0 12px;font:15px ui-monospace,Menlo,monospace;text-transform:uppercase}
+button{width:100%;height:44px;margin-top:10px;border:0;border-radius:10px;background:var(--accent);color:#041016;
+font:600 14px system-ui,sans-serif;cursor:pointer;text-transform:uppercase}button.secondary{background:#173039;color:var(--fg)}
+button:disabled{opacity:.5}.row{display:grid;gap:8px;grid-template-columns:1fr 1fr;margin-top:8px}
+.row3{display:grid;gap:8px;grid-template-columns:1fr 1fr 1fr;margin-top:8px}
+@media(max-width:420px){.row3{grid-template-columns:1fr 1fr}}
+.msg{margin-top:16px;min-height:1.2em}.err{color:var(--bad)}.ok{color:var(--accent)}
+.hidden{display:none}.pair{display:grid;gap:8px;grid-template-columns:1fr 72px}
+</style>
+</head>
+<body>
+<main>
+  <h1>JEREMY</h1>
+  <p id="sub">JOIN JEREMY_XXXX WIFI, OPEN JEREMY:8080, ENTER THE OLED CODE.</p>
+
+  <section id="auth">
+    <label for="code">CODE</label>
+    <input id="code" maxlength="8" autocomplete="one-time-code" placeholder="ABCD"/>
+    <button id="authBtn">AUTH BOT</button>
+  </section>
+
+  <section id="panel" class="hidden">
+    <p>CONTROL PANEL — DOUBLE-CLICK BOOT FOR A FRESH CODE.</p>
+    <label for="panelCode">ACTIVE PANEL CODE</label>
+    <input id="panelCode" maxlength="8"/>
+
+    <p id="liveStatus" class="ok" style="margin-top:12px">UPTIME: — · SWITCH: —</p>
+
+    <h2>DOODLE</h2>
+    <p>DRAW ON THE PAD, THEN SEND TO THE OLED (128×64).</p>
+    <canvas id="doodle" width="128" height="64" style="width:100%;height:160px;touch-action:none;image-rendering:pixelated;background:#000;border:1px solid #234;border-radius:8px;cursor:crosshair"></canvas>
+    <div class="pair" style="margin-top:8px">
+      <button class="secondary" id="doodleClearBtn" type="button">CLEAR</button>
+      <input id="doodleSecs" type="number" min="1" max="120" value="10" title="SECONDS"/>
+    </div>
+    <button id="doodleSendBtn" type="button">SEND DOODLE TO OLED</button>
+
+
+    <h2>POWER SWITCH</h2>
+    <p>2 IDENTICAL PINS: EITHER → D25 · OTHER → GND. ON = PROGRAMMED TEXT + LIGHTS (EDIT IN JEREMY MAKER OVER USB).</p>
+
+    <h2>LEDS</h2>
+    <p>NO GND — BLUE D2+D23 · RED D18+D5 · YELLOW D19+D13. MEGA-BRIGHT FULL PWM. EFFECTS STROBE ALL 3 LEDS. AUTO-OFF 12s. IF HOT: UNPLUG. ADD 220Ω ON EACH LONG LEG.</p>
+    <div class="pair">
+      <select id="ledWhich">
+        <option value="blue">BLUE (D2)</option>
+        <option value="red">RED (D18)</option>
+        <option value="yellow">YELLOW (D19)</option>
+        <option value="all">ALL LEDS</option>
+      </select>
+      <select id="ledMode">
+        <option value="on">ON</option>
+        <option value="off">OFF</option>
+        <option value="strobe">STROBE</option>
+      </select>
+    </div>
+    <button class="secondary" id="ledApplyBtn">APPLY LED</button>
+    <div class="row3" style="margin-top:8px">
+      <button class="secondary" data-cmd="led_on">BLUE ON</button>
+      <button class="secondary" data-cmd="red_on">RED ON</button>
+      <button class="secondary" data-cmd="yellow_on">YELLOW ON</button>
+    </div>
+    <div class="row3">
+      <button class="secondary" data-cmd="led_off">BLUE OFF</button>
+      <button class="secondary" data-cmd="red_off">RED OFF</button>
+      <button class="secondary" data-cmd="yellow_off">YELLOW OFF</button>
+    </div>
+    <div class="row">
+      <button class="secondary" data-cmd="leds_off">ALL OFF</button>
+      <button class="secondary" data-cmd="leds_on">ALL ON</button>
+    </div>
+
+    <h2>EYES</h2>
+    <div class="pair">
+      <select id="eyeMode">
+        <option value="pop">POP EYES</option>
+        <option value="eye_wiggle">EYE WIGGLE</option>
+        <option value="orbit_blink">ORBIT BLINK</option>
+      </select>
+      <button class="secondary" id="eyeApplyBtn" style="margin-top:0">APPLY</button>
+    </div>
+
+    <h2>JEREMY SHOWS</h2>
+    <div class="pair">
+      <select id="showMode">
+        <option value="midnight_burst">MIDNIGHT BURST</option>
+        <option value="spark_salute">SPARK SALUTE</option>
+        <option value="confetti_pop">CONFETTI POP</option>
+        <option value="clear_screen">CLEAR SCREEN</option>
+      </select>
+      <button class="secondary" id="showApplyBtn" style="margin-top:0">APPLY</button>
+    </div>
+
+    <h2>SHOW TEXT</h2>
+    <div class="pair">
+      <input id="showText" maxlength="40" placeholder="HELLO JEREMY"/>
+      <input id="showSecs" type="number" min="1" max="60" value="3" title="SECONDS"/>
+    </div>
+    <button class="secondary" id="showTextBtn">SHOW ON OLED</button>
+
+    <h2>SHOW IMAGE</h2>
+    <div class="pair">
+      <select id="showImage">
+        <option value="star">STAR</option>
+        <option value="heart">HEART</option>
+        <option value="bolt">BOLT</option>
+        <option value="face">FACE</option>
+        <option value="burst">BURST</option>
+      </select>
+      <input id="imgSecs" type="number" min="1" max="60" value="3" title="SECONDS"/>
+    </div>
+    <button class="secondary" id="showImageBtn">SHOW IMAGE</button>
+
+    <h2>UPLOAD PNG</h2>
+    <p>PICK A PNG FROM YOUR PHONE. IT IS SHRUNK TO 128X64 MONO ON DEVICE.</p>
+    <input id="pngFile" type="file" accept="image/png,image/*" style="padding:10px;height:auto"/>
+    <div class="pair" style="margin-top:8px">
+      <canvas id="pngPreview" width="128" height="64" style="width:100%;height:64px;image-rendering:pixelated;background:#000;border:1px solid #234;border-radius:8px"></canvas>
+      <input id="pngSecs" type="number" min="1" max="60" value="5" title="SECONDS"/>
+    </div>
+    <button class="secondary" id="pngBtn">SHOW PNG ON OLED</button>
+
+    <button class="secondary" id="backBtn">BACK TO AUTH</button>
+  </section>
+
+  <p class="msg" id="msg"></p>
+</main>
+<script>
+
+
+const msg=document.getElementById('msg');
+const auth=document.getElementById('auth');
+const panel=document.getElementById('panel');
+const codeEl=document.getElementById('code');
+const panelCodeEl=document.getElementById('panelCode');
+function setMsg(t,ok){msg.textContent=(t||'').toUpperCase();msg.className='msg '+(ok?'ok':'err');}
+async function post(path,body){
+  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok||!j.ok) throw new Error(j.message||'REQUEST FAILED');
+  return j;
+}
+document.getElementById('authBtn').onclick=async()=>{
+  const code=codeEl.value.trim().toUpperCase();
+  setMsg('');
+  try{
+    const j=await post('/api/auth',{code});
+    panelCodeEl.value=(j.panelCode||code).toUpperCase();
+    auth.classList.add('hidden');
+    panel.classList.remove('hidden');
+    setMsg(j.message||'AUTHENTICATED',true);
+  }catch(e){setMsg(e.message||'AUTH FAILED',false);}
+};
+document.getElementById('backBtn').onclick=()=>{
+  panel.classList.add('hidden');auth.classList.remove('hidden');setMsg('');
+};
+async function runCmd(action){
+  const code=panelCodeEl.value.trim().toUpperCase();
+  setMsg('');
+  try{
+    const j=await post('/api/command',{code,action});
+    setMsg(j.message||'OK',true);
+  }catch(e){setMsg(e.message||'COMMAND FAILED',false);}
+}
+document.getElementById('ledApplyBtn').onclick=()=>{
+  const which=document.getElementById('ledWhich').value;
+  const mode=document.getElementById('ledMode').value;
+  let action='led_on';
+  if(which==='all' && mode==='on') action='leds_on';
+  else if(which==='all' && mode==='off') action='leds_off';
+  else if(which==='all' && mode==='strobe') action='led_strobe';
+  else if(which==='blue' && mode==='on') action='led_on';
+  else if(which==='blue' && mode==='off') action='led_off';
+  else if(which==='blue' && mode==='strobe') action='led_strobe';
+  else if(which==='red' && mode==='on') action='red_on';
+  else if(which==='red' && mode==='off') action='red_off';
+  else if(which==='red' && mode==='strobe') action='red_strobe';
+  else if(which==='yellow' && mode==='on') action='yellow_on';
+  else if(which==='yellow' && mode==='off') action='yellow_off';
+  else if(which==='yellow' && mode==='strobe') action='yellow_strobe';
+  runCmd(action);
+};
+document.getElementById('eyeApplyBtn').onclick=()=>runCmd(document.getElementById('eyeMode').value);
+document.getElementById('showApplyBtn').onclick=()=>runCmd(document.getElementById('showMode').value);
+document.querySelectorAll('[data-cmd]').forEach(btn=>{
+  btn.onclick=()=>runCmd(btn.dataset.cmd);
+});
+document.getElementById('showTextBtn').onclick=async()=>{
+  const code=panelCodeEl.value.trim().toUpperCase();
+  const text=document.getElementById('showText').value.trim().toUpperCase();
+  const seconds=Number(document.getElementById('showSecs').value)||3;
+  setMsg('');
+  try{
+    const j=await post('/api/command',{code,action:'show_text',text,seconds});
+    setMsg(j.message||'OK',true);
+  }catch(e){setMsg(e.message||'FAILED',false);}
+};
+document.getElementById('showImageBtn').onclick=async()=>{
+  const code=panelCodeEl.value.trim().toUpperCase();
+  const image=document.getElementById('showImage').value;
+  const seconds=Number(document.getElementById('imgSecs').value)||3;
+  setMsg('');
+  try{
+    const j=await post('/api/command',{code,action:'show_image',image,seconds});
+    setMsg(j.message||'OK',true);
+  }catch(e){setMsg(e.message||'FAILED',false);}
+};
+
+function fileToMonoB64(file){
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    const url=URL.createObjectURL(file);
+    img.onload=()=>{
+      try{
+        const c=document.getElementById('pngPreview');
+        const ctx=c.getContext('2d');
+        ctx.fillStyle='#000';
+        ctx.fillRect(0,0,128,64);
+        const scale=Math.min(128/img.width,64/img.height);
+        const w=img.width*scale,h=img.height*scale;
+        ctx.drawImage(img,(128-w)/2,(64-h)/2,w,h);
+        const data=ctx.getImageData(0,0,128,64).data;
+        const bytes=new Uint8Array(1024);
+        for(let y=0;y<64;y++){
+          for(let x=0;x<128;x++){
+            const i=(y*128+x)*4;
+            const lum=0.299*data[i]+0.587*data[i+1]+0.114*data[i+2];
+            if(lum>=128) bytes[y*16+(x>>3)] |= (0x80>>(x&7));
+          }
+        }
+        let bin='';
+        for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
+        resolve(btoa(bin));
+      }catch(e){reject(e);}
+      finally{URL.revokeObjectURL(url);}
+    };
+    img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('BAD IMAGE'));};
+    img.src=url;
+  });
+}
+let pendingB64='';
+document.getElementById('pngFile').onchange=async(e)=>{
+  const f=e.target.files&&e.target.files[0];
+  if(!f) return;
+  setMsg('CONVERTING…',true);
+  try{
+    pendingB64=await fileToMonoB64(f);
+    setMsg('PNG READY — TAP SHOW PNG',true);
+  }catch(err){pendingB64='';setMsg(err.message||'CONVERT FAILED',false);}
+};
+document.getElementById('pngBtn').onclick=async()=>{
+  const code=panelCodeEl.value.trim().toUpperCase();
+  const seconds=Number(document.getElementById('pngSecs').value)||5;
+  setMsg('');
+  try{
+    if(!pendingB64){
+      const f=document.getElementById('pngFile').files&&document.getElementById('pngFile').files[0];
+      if(!f) throw new Error('PICK A PNG FIRST');
+      pendingB64=await fileToMonoB64(f);
+    }
+    const j=await post('/api/command',{code,action:'show_png',bitmap:pendingB64,seconds});
+    setMsg(j.message||'OK',true);
+  }catch(e){setMsg(e.message||'FAILED',false);}
+};
+
+function fmtStatus(j){
+  const up=j.uptime||((j.uptimeSec||0)+'s');
+  const sw=j.switchOn?'ON':'OFF';
+  return 'UPTIME: '+up+' · SWITCH: '+sw+(j.version?(' · V'+j.version):'');
+}
+async function pollStatus(){
+  const el=document.getElementById('liveStatus');
+  if(!el) return;
+  try{
+    const r=await fetch('/api/status');
+    const j=await r.json();
+    el.textContent=fmtStatus(j).toUpperCase();
+    el.className='ok';
+  }catch(e){
+    el.textContent='STATUS OFFLINE';
+    el.className='err';
+  }
+}
+pollStatus();
+setInterval(pollStatus,1000);
+
+(function(){
+  const c=document.getElementById('doodle');
+  if(!c) return;
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='#000';
+  ctx.fillRect(0,0,128,64);
+  ctx.strokeStyle='#fff';
+  ctx.fillStyle='#fff';
+  ctx.lineWidth=3;
+  ctx.lineCap='round';
+  ctx.lineJoin='round';
+  let drawing=false;
+  function pos(e){
+    const r=c.getBoundingClientRect();
+    const t=(e.touches&&e.touches[0])||e;
+    return {
+      x:(t.clientX-r.left)*(128/r.width),
+      y:(t.clientY-r.top)*(64/r.height)
+    };
+  }
+  function start(e){e.preventDefault();drawing=true;const p=pos(e);ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x+0.1,p.y+0.1);ctx.stroke();}
+  function move(e){if(!drawing)return;e.preventDefault();const p=pos(e);ctx.lineTo(p.x,p.y);ctx.stroke();}
+  function end(e){if(!drawing)return;e.preventDefault();drawing=false;}
+  c.addEventListener('mousedown',start);
+  c.addEventListener('mousemove',move);
+  window.addEventListener('mouseup',end);
+  c.addEventListener('touchstart',start,{passive:false});
+  c.addEventListener('touchmove',move,{passive:false});
+  c.addEventListener('touchend',end,{passive:false});
+  document.getElementById('doodleClearBtn').onclick=()=>{ctx.fillStyle='#000';ctx.fillRect(0,0,128,64);ctx.strokeStyle='#fff';ctx.fillStyle='#fff';};
+  function doodleToB64(){
+    const data=ctx.getImageData(0,0,128,64).data;
+    const bytes=new Uint8Array(1024);
+    for(let y=0;y<64;y++){
+      for(let x=0;x<128;x++){
+        const i=(y*128+x)*4;
+        const lum=0.299*data[i]+0.587*data[i+1]+0.114*data[i+2];
+        if(lum>=40) bytes[y*16+(x>>3)] |= (0x80>>(x&7));
+      }
+    }
+    let bin='';
+    for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+  document.getElementById('doodleSendBtn').onclick=async()=>{
+    const code=panelCodeEl.value.trim().toUpperCase();
+    const seconds=Number(document.getElementById('doodleSecs').value)||10;
+    setMsg('');
+    try{
+      const bitmap=doodleToB64();
+      const j=await post('/api/command',{code,action:'show_png',bitmap,seconds});
+      setMsg(j.message||'DOODLE SENT',true);
+    }catch(e){setMsg(e.message||'DOODLE FAILED',false);}
+  };
+})();
+</script>
+</body>
+</html>
+)HTML";
+
+void generateCode(char* out, size_t len) {
+  static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  for (size_t i = 0; i + 1 < len; i++) {
+    out[i] = alphabet[random(0, (int)(sizeof(alphabet) - 1))];
+  }
+  out[len - 1] = '\0';
+}
+
+void buildUniqueSsid() {
+  uint64_t chip = ESP.getEfuseMac();
+  uint16_t shortId = (uint16_t)((chip >> 16) ^ (chip & 0xFFFF));
+  snprintf(wifiSsid, sizeof(wifiSsid), "jeremy_%04X", shortId);
+}
+
+bool codesEqual(const String& a, const char* b) {
+  String left = a;
+  left.trim();
+  left.toUpperCase();
+  String right = String(b);
+  right.trim();
+  right.toUpperCase();
+  return left.length() > 0 && left == right;
+}
+
+String readPostBody() {
+  if (server.hasArg("plain") && server.arg("plain").length() > 0) {
+    return server.arg("plain");
+  }
+  // Fallbacks when clients POST form fields instead of JSON
+  if (server.hasArg("code")) {
+    String out = "{\"code\":\"";
+    out += server.arg("code");
+    out += "\"";
+    if (server.hasArg("action")) {
+      out += ",\"action\":\"";
+      out += server.arg("action");
+      out += "\"";
+    }
+    if (server.hasArg("text")) {
+      out += ",\"text\":\"";
+      out += server.arg("text");
+      out += "\"";
+    }
+    if (server.hasArg("image")) {
+      out += ",\"image\":\"";
+      out += server.arg("image");
+      out += "\"";
+    }
+    if (server.hasArg("seconds")) {
+      out += ",\"seconds\":";
+      out += server.arg("seconds");
+    }
+    out += "}";
+    return out;
+  }
+  return "";
+}
+
+void upperCopy(char* dest, size_t destLen, const String& src) {
+  size_t n = src.length();
+  if (n >= destLen) n = destLen - 1;
+  for (size_t i = 0; i < n; i++) {
+    char c = src[i];
+    if (c >= 'a' && c <= 'z') c = c - 32;
+    dest[i] = c;
+  }
+  dest[n] = '\0';
+}
+
+void persistPanelSession() {
+  prefs.putString("panelCode", panelCode);
+  prefs.putBool("panelOn", panelCodeActive);
+}
+
+void lockPanelToPairingCode() {
+  // First auth: OLED pairing code becomes the active panel code (pairing stops working via isPaired).
+  memcpy(panelCode, pairingCode, sizeof(panelCode));
+  panelCodeActive = true;
+  persistPanelSession();
+}
+
+void mintNewPanelCode() {
+  generateCode(panelCode, sizeof(panelCode));
+  panelCodeActive = true;
+  persistPanelSession(); // previous panel codes are dead; only this one is stored
+}
+
+void sendCors() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+void handleOptions() {
+  sendCors();
+  server.send(204);
+}
+
+String jsonEscape(const String& s) {
+  String out;
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c == '"' || c == '\\') out += '\\';
+    out += c;
+  }
+  return out;
+}
+
+String extractJsonString(const String& body, const char* key) {
+  String needle = String("\"") + key + "\"";
+  int idx = body.indexOf(needle);
+  if (idx < 0) return "";
+  int colon = body.indexOf(':', idx);
+  if (colon < 0) return "";
+  int i = colon + 1;
+  while (i < (int)body.length() && (body[i] == ' ' || body[i] == '\t')) i++;
+  if (i >= (int)body.length()) return "";
+  if (body[i] == '"') {
+    int q1 = i;
+    int q2 = body.indexOf('"', q1 + 1);
+    if (q2 <= q1) return "";
+    return body.substring(q1 + 1, q2);
+  }
+  // number / bare token until comma or brace
+  int end = i;
+  while (end < (int)body.length() && body[end] != ',' && body[end] != '}' && body[end] != ' ') end++;
+  return body.substring(i, end);
+}
+
+int extractJsonInt(const String& body, const char* key, int fallback) {
+  String s = extractJsonString(body, key);
+  if (s.length() == 0) return fallback;
+  return constrain(s.toInt(), 1, 120);
+}
+
+bool panelCodeOk(const String& code) {
+  // Only the CURRENT active panel code works. Old codes never revive a session.
+  return panelCodeActive && panelCode[0] != 0 && codesEqual(code, panelCode);
+}
+
+bool pairingCodeOk(const String& code) {
+  return !isPaired && pairingCode[0] != 0 && codesEqual(code, pairingCode);
+}
+
+// Commands only work AFTER Auth Bot. Pairing code is auth-only.
+bool codeAccepted(const String& code) {
+  if (!isPaired) return false;
+  return panelCodeOk(code);
+}
+
+State resumeAfterTransient() {
+  if (!isPaired) return PAIRING;
+  if (stateBeforeOverlay == INFO_SCREEN) return INFO_SCREEN;
+  if (stateBeforeOverlay == PAIRING) return NORMAL; // paired now
+  return (stateBeforeOverlay == SHOW_OVERLAY || stateBeforeOverlay == PLAY_ANIM)
+           ? NORMAL
+           : stateBeforeOverlay;
+}
+
+void clearSparks() {
+  for (int i = 0; i < MAX_SPARKS; i++) sparks[i].alive = false;
+}
+
+void spawnBurst(float cx, float cy, int count, float speed) {
+  int spawned = 0;
+  for (int i = 0; i < MAX_SPARKS && spawned < count; i++) {
+    if (sparks[i].alive) continue;
+    float ang = (random(0, 628) / 100.0f);
+    float sp = speed * (0.4f + (random(0, 100) / 100.0f));
+    sparks[i].x = cx;
+    sparks[i].y = cy;
+    sparks[i].vx = cosf(ang) * sp;
+    sparks[i].vy = sinf(ang) * sp;
+    sparks[i].life = random(18, 40);
+    sparks[i].alive = true;
+    spawned++;
+  }
+}
+
+void startOverlayText(const char* text, int seconds) {
+  upperCopy(overlayText, sizeof(overlayText), String(text));
+  overlayImage[0] = '\0';
+  overlayIsImage = false;
+  overlayIsBitmap = false;
+  overlayUntil = millis() + (unsigned long)seconds * 1000UL;
+  if (state != SHOW_OVERLAY && state != PLAY_ANIM) stateBeforeOverlay = state;
+  state = SHOW_OVERLAY;
+}
+
+void startOverlayImage(const char* name, int seconds) {
+  strncpy(overlayImage, name, sizeof(overlayImage) - 1);
+  overlayImage[sizeof(overlayImage) - 1] = '\0';
+  overlayText[0] = '\0';
+  overlayIsImage = true;
+  overlayIsBitmap = false;
+  overlayUntil = millis() + (unsigned long)seconds * 1000UL;
+  if (state != SHOW_OVERLAY && state != PLAY_ANIM) stateBeforeOverlay = state;
+  state = SHOW_OVERLAY;
+}
+
+
+int b64Val(char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+') return 62;
+  if (c == '/') return 63;
+  return -1;
+}
+
+int decodeBase64(const String& in, uint8_t* out, int outMax) {
+  int len = in.length();
+  int o = 0;
+  int val = 0;
+  int valb = -8;
+  for (int i = 0; i < len; i++) {
+    char c = in[i];
+    if (c == '=' || c == '\n' || c == '\r' || c == ' ') continue;
+    int d = b64Val(c);
+    if (d < 0) continue;
+    val = (val << 6) + d;
+    valb += 6;
+    if (valb >= 0) {
+      if (o >= outMax) return -1;
+      out[o++] = (uint8_t)((val >> valb) & 0xFF);
+      valb -= 8;
+    }
+  }
+  return o;
+}
+
+void startOverlayBitmap(int seconds) {
+  overlayIsBitmap = true;
+  overlayIsImage = false;
+  overlayText[0] = '\0';
+  overlayImage[0] = '\0';
+  overlayUntil = millis() + (unsigned long)seconds * 1000UL;
+  if (state != SHOW_OVERLAY && state != PLAY_ANIM) stateBeforeOverlay = state;
+  state = SHOW_OVERLAY;
+}
+
+void startAnim(AnimKind kind, unsigned long durationMs) {
+  activeAnim = kind;
+  animStart = millis();
+  animUntil = animStart + durationMs;
+  clearSparks();
+  if (state != SHOW_OVERLAY && state != PLAY_ANIM) stateBeforeOverlay = state;
+  state = PLAY_ANIM;
+
+  if (kind == ANIM_MIDNIGHT_BURST || kind == ANIM_SPARK_SALUTE || kind == ANIM_CONFETTI_POP) {
+    spawnBurst(64, 28, 14, 2.4f);
+  }
+}
+
+bool nameIs(const char* a, const char* b) {
+  if (!a || !b) return false;
+  while (*a && *b) {
+    char ca = (*a >= 'A' && *a <= 'Z') ? (*a + 32) : *a;
+    char cb = (*b >= 'A' && *b <= 'Z') ? (*b + 32) : *b;
+    if (ca != cb) return false;
+    a++;
+    b++;
+  }
+  return *a == *b;
+}
+
+const uint8_t* iconByName(const char* name) {
+  if (!name) return ICON_STAR;
+  if (nameIs(name, "heart")) return ICON_HEART;
+  if (nameIs(name, "bolt")) return ICON_BOLT;
+  if (nameIs(name, "face")) return ICON_FACE;
+  if (nameIs(name, "burst")) return ICON_BURST;
+  return ICON_STAR;
+}
+
+void drawIcon16(const uint8_t* icon, int ox, int oy, int scale) {
+  for (int y = 0; y < 16; y++) {
+    uint8_t hi = pgm_read_byte(&icon[y * 2]);
+    uint8_t lo = pgm_read_byte(&icon[y * 2 + 1]);
+    uint16_t row = ((uint16_t)hi << 8) | lo;
+    for (int x = 0; x < 16; x++) {
+      if (row & (0x8000 >> x)) {
+        display.fillRect(ox + x * scale, oy + y * scale, scale, scale, SH110X_WHITE);
+      }
+    }
+  }
+}
+
+void drawWrappedText(const char* text, int yStart) {
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+  String s = String(text);
+  s.toUpperCase();
+  int maxChars = 21;
+  // SH1106 clips the top row — never draw above y=8
+  int y = yStart < 8 ? 8 : yStart;
+  while (s.length() > 0 && y < 56) {
+    String line = s.substring(0, maxChars);
+    int cut = line.lastIndexOf(' ');
+    if (s.length() > (unsigned)maxChars && cut > 8) {
+      line = s.substring(0, cut);
+      s = s.substring(cut + 1);
+    } else {
+      s = s.substring(line.length());
+      s.trim();
+    }
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(line.c_str(), 0, 0, &x1, &y1, &w, &h);
+    display.setCursor((128 - (int)w) / 2, y);
+    display.print(line);
+    y += 12;
+  }
+}
+
+void renderOverlay() {
+  display.clearDisplay();
+  if (overlayIsBitmap) {
+    for (int y = 0; y < 64; y++) {
+      for (int x = 0; x < 128; x++) {
+        uint8_t byte = overlayBitmap[y * 16 + (x >> 3)];
+        if (byte & (0x80 >> (x & 7))) {
+          display.drawPixel(x, y, SH110X_WHITE);
+        }
+      }
+    }
+  } else if (overlayIsImage) {
+    drawIcon16(iconByName(overlayImage), 32, 10, 3);
+    if (overlayText[0]) {
+      display.setCursor(2, 56);
+      display.print(overlayText);
+    }
+  } else {
+    drawWrappedText(overlayText, 18);
+  }
+  display.display();
+}
+
+void handleRoot() {
+  sendCors();
+  server.send_P(200, "text/html", INDEX_HTML);
+}
+
+void handleStatus() {
+  sendCors();
+  unsigned long sec = millis() / 1000UL;
+  unsigned long h = sec / 3600UL;
+  unsigned long m = (sec / 60UL) % 60UL;
+  unsigned long s = sec % 60UL;
+  char upBuf[24];
+  snprintf(upBuf, sizeof(upBuf), "%luh %lum %lus", (unsigned long)h, (unsigned long)m, (unsigned long)s);
+
+  String body = "{";
+  body += "\"paired\":";
+  body += isPaired ? "true" : "false";
+  body += ",\"ssid\":\"";
+  body += jsonEscape(String(wifiSsid));
+  body += "\",\"version\":\"";
+  body += FIRMWARE_VERSION;
+  body += "\",\"panelCodeActive\":";
+  body += panelCodeActive ? "true" : "false";
+  body += ",\"url\":\"";
+  body += PAIRING_URL;
+  body += "\",\"uptimeSec\":";
+  body += String(sec);
+  body += ",\"uptime\":\"";
+  body += upBuf;
+  body += "\",\"switchOn\":";
+  body += switchIsOn() ? "true" : "false";
+  body += "}";
+  server.send(200, "application/json", body);
+}
+void handleAuth() {
+  sendCors();
+  if (server.method() != HTTP_POST) {
+    server.send(405, "application/json", "{\"ok\":false,\"message\":\"POST ONLY\"}");
+    return;
+  }
+
+  String body = readPostBody();
+  String code = extractJsonString(body, "code");
+  code.trim();
+  code.toUpperCase();
+  if (code.length() == 0) {
+    server.send(400, "application/json", "{\"ok\":false,\"message\":\"MISSING CODE\"}");
+    return;
+  }
+
+  // First-time pairing: OLED code becomes the panel session (persisted)
+  if (pairingCodeOk(code)) {
+    isPaired = true;
+    needPairingScreen = false;
+    prefs.putBool("paired", true);
+    prefs.putBool("needPair", false);
+    prefs.putInt("authGate", 1);
+    prefs.remove("pairCode");
+    lockPanelToPairingCode();
+    if (state == PAIRING || state == INFO_SCREEN) state = NORMAL;
+    String resp = "{\"ok\":true,\"message\":\"BOT AUTHENTICATED\",\"paired\":true,\"panel\":true,\"panelCode\":\"";
+    resp += panelCode;
+    resp += "\"}";
+    server.send(200, "application/json", resp);
+    return;
+  }
+
+  // Already paired: only the CURRENT panel code (never rewrite it from the client)
+  if (panelCodeOk(code)) {
+    String resp = "{\"ok\":true,\"message\":\"PANEL CODE ACCEPTED\",\"paired\":true,\"panel\":true,\"panelCode\":\"";
+    resp += panelCode;
+    resp += "\"}";
+    server.send(200, "application/json", resp);
+    return;
+  }
+
+  if (isPaired && !panelCodeActive) {
+    server.send(401, "application/json",
+                "{\"ok\":false,\"message\":\"DOUBLE-CLICK BOOT ON THE BOT FOR A PANEL CODE\"}");
+    return;
+  }
+
+  server.send(401, "application/json",
+              "{\"ok\":false,\"message\":\"WRONG CODE — CHECK THE ROBOT SCREEN\"}");
+}
+
+void handleCommand() {
+  sendCors();
+  if (server.method() != HTTP_POST) {
+    server.send(405, "application/json", "{\"ok\":false,\"message\":\"POST ONLY\"}");
+    return;
+  }
+
+  String body = readPostBody();
+  String code = extractJsonString(body, "code");
+  code.trim();
+  code.toUpperCase();
+  String action = extractJsonString(body, "action");
+  action.toLowerCase();
+
+  if (!isPaired) {
+    server.send(401, "application/json",
+                "{\"ok\":false,\"message\":\"AUTH BOT FIRST — PAIRING LOCKED\"}");
+    return;
+  }
+  if (!codeAccepted(code)) {
+    server.send(401, "application/json",
+                "{\"ok\":false,\"message\":\"WRONG CODE — CHECK THE CODE ON THE ROBOT SCREEN\"}");
+    return;
+  }
+  if (action == "led_on") {
+    ledOverride = true; ledOverrideOn = true; setBlue(true);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"BLUE ON\"}");
+    return;
+  }
+  if (action == "led_off") {
+    ledOverride = true; ledOverrideOn = false; setBlue(false);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"BLUE OFF\"}");
+    return;
+  }
+  if (action == "red_on") {
+    redOverride = true; redOverrideOn = true; setRed(true);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"RED ON\"}");
+    return;
+  }
+  if (action == "red_off") {
+    redOverride = true; redOverrideOn = false; setRed(false);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"RED OFF\"}");
+    return;
+  }
+  if (action == "yellow_on") {
+    yellowOverride = true; yellowOverrideOn = true; setYellow(true);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"YELLOW ON\"}");
+    return;
+  }
+  if (action == "yellow_off") {
+    yellowOverride = true; yellowOverrideOn = false; setYellow(false);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"YELLOW OFF\"}");
+    return;
+  }
+  if (action == "leds_on") {
+    ledOverride = redOverride = yellowOverride = true;
+    ledOverrideOn = redOverrideOn = yellowOverrideOn = true;
+    setBlue(true); setRed(true); setYellow(true);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"ALL LEDS ON\"}");
+    return;
+  }
+  if (action == "leds_off") {
+    ledOverride = redOverride = yellowOverride = true;
+    ledOverrideOn = redOverrideOn = yellowOverrideOn = false;
+    setBlue(false); setRed(false); setYellow(false);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"ALL LEDS OFF\"}");
+    return;
+  }
+  if (action == "led_strobe" || action == "red_strobe" || action == "yellow_strobe") {
+    startAnim(ANIM_LED_STROBE, 2500);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"LED STROBE\"}");
+    return;
+  }
+  if (action == "boom") {
+    unsigned long nowBoom = millis();
+    if (nowBoom - lastBoomMs < BOOM_COOLDOWN_MS) {
+      server.send(429, "application/json",
+                  "{\"ok\":false,\"message\":\"BOOM COOLING DOWN — WAIT\"}");
+      return;
+    }
+    lastBoomMs = nowBoom;
+    // Pulse transistor gate only — capacitor energy never enters GPIO
+    digitalWrite(boomPin, HIGH);
+    setAllLeds(true);
+    delay(BOOM_PULSE_MS);
+    digitalWrite(boomPin, LOW);
+    startAnim(ANIM_BOOM, 900);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"BOOM\"}");
+    return;
+  }
+  if (action == "pop") {
+    forcePop = true;
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"EYES POPPING\"}");
+    return;
+  }
+  if (action == "eye_wiggle") {
+    startAnim(ANIM_EYE_WIGGLE, 2200);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"EYE WIGGLE\"}");
+    return;
+  }
+  if (action == "orbit_blink") {
+    startAnim(ANIM_ORBIT_BLINK, 2800);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"ORBIT BLINK\"}");
+    return;
+  }
+  if (action == "midnight_burst") {
+    // Jeremy New Cycle fireworks (Vector-style salute, rebranded)
+    startAnim(ANIM_MIDNIGHT_BURST, 4500);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"MIDNIGHT BURST\"}");
+    return;
+  }
+  if (action == "spark_salute") {
+    startAnim(ANIM_SPARK_SALUTE, 3200);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"SPARK SALUTE\"}");
+    return;
+  }
+  if (action == "confetti_pop") {
+    startAnim(ANIM_CONFETTI_POP, 2800);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"CONFETTI POP\"}");
+    return;
+  }
+  if (action == "clear_screen") {
+    overlayUntil = 0;
+    overlayIsBitmap = false;
+    activeAnim = ANIM_NONE;
+    state = resumeAfterTransient();
+    if (state == SHOW_OVERLAY || state == PLAY_ANIM) state = isPaired ? NORMAL : PAIRING;
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"SCREEN CLEARED\"}");
+    return;
+  }
+  if (action == "show_text") {
+    String text = extractJsonString(body, "text");
+    text.trim();
+    text.toUpperCase();
+    if (text.length() == 0) {
+      server.send(400, "application/json", "{\"ok\":false,\"message\":\"MISSING TEXT\"}");
+      return;
+    }
+    if (text.length() > 40) text = text.substring(0, 40);
+    int seconds = extractJsonInt(body, "seconds", 3);
+    startOverlayText(text.c_str(), seconds);
+    server.send(200, "application/json",
+                "{\"ok\":true,\"message\":\"SHOWING TEXT ON OLED\"}");
+    return;
+  }
+  if (action == "show_image") {
+    String image = extractJsonString(body, "image");
+    image.trim();
+    image.toLowerCase();
+    if (image.length() == 0) image = "star";
+    int seconds = extractJsonInt(body, "seconds", 3);
+    startOverlayImage(image.c_str(), seconds);
+    server.send(200, "application/json",
+                "{\"ok\":true,\"message\":\"SHOWING IMAGE ON OLED\"}");
+    return;
+  }
+
+  if (action == "show_png" || action == "show_bitmap") {
+    String b64 = extractJsonString(body, "bitmap");
+    if (b64.length() == 0) b64 = extractJsonString(body, "png");
+    b64.trim();
+    if (b64.length() < 8) {
+      server.send(400, "application/json", "{\"ok\":false,\"message\":\"MISSING BITMAP\"}");
+      return;
+    }
+    memset(overlayBitmap, 0, OLED_BMP_BYTES);
+    int n = decodeBase64(b64, overlayBitmap, OLED_BMP_BYTES);
+    if (n < OLED_BMP_BYTES) {
+      server.send(400, "application/json", "{\"ok\":false,\"message\":\"BAD BITMAP SIZE\"}");
+      return;
+    }
+    int seconds = extractJsonInt(body, "seconds", 5);
+    startOverlayBitmap(seconds);
+    server.send(200, "application/json",
+                "{\"ok\":true,\"message\":\"SHOWING PNG ON OLED\"}");
+    return;
+  }
+
+  server.send(400, "application/json", "{\"ok\":false,\"message\":\"UNKNOWN ACTION\"}");
+}
+
+
+
+
+
+void setupWifiAndServer() {
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPsetHostname("jeremy");
+  IPAddress apIP(192, 168, 4, 1);
+  IPAddress netMsk(255, 255, 255, 0);
+  WiFi.softAPConfig(apIP, apIP, netMsk);
+  // Lower TX power so 3xAAA packs don't brown out as hard
+  WiFi.softAP(wifiSsid, NULL, 1, 0, 4);
+  delayServicingUsb(50);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  delayServicingUsb(150);
+
+  dnsServer.start(DNS_PORT, "*", apIP);
+
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/api/status", HTTP_GET, handleStatus);
+  server.on("/api/status", HTTP_OPTIONS, handleOptions);
+  server.on("/api/auth", HTTP_POST, handleAuth);
+  server.on("/api/auth", HTTP_OPTIONS, handleOptions);
+  server.on("/api/command", HTTP_POST, handleCommand);
+  server.on("/api/command", HTTP_OPTIONS, handleOptions);
+  server.onNotFound([]() {
+    sendCors();
+    if (server.method() == HTTP_OPTIONS) {
+      server.send(204);
+      return;
+    }
+    handleRoot();
+  });
+  server.begin();
+}
+
+void drawEye(int x, int y, float s) {
+  int half = (int)(s / 2.0f);
+  if (half < 2) return;
+  int w = (int)s;
+  int h = (int)s;
+  int ox2 = 0;
+  int oy2 = 0;
+
+  switch (eyeShape) {
+    case 0: // circle
+      display.fillCircle(x, y, half, SH110X_WHITE);
+      break;
+    case 1: // square
+      display.fillRect(x - half, y - half, w, h, SH110X_WHITE);
+      break;
+    case 3: // wide
+      ox2 = 4;
+      oy2 = -2;
+      display.fillRoundRect(x - half - ox2, y - half - oy2, w + ox2 * 2, h + oy2 * 2, 6, SH110X_WHITE);
+      break;
+    case 4: // tall
+      ox2 = -2;
+      oy2 = 3;
+      display.fillRoundRect(x - half - ox2, y - half - oy2, w + ox2 * 2, h + oy2 * 2, 6, SH110X_WHITE);
+      break;
+    case 5: // diamond
+      display.fillTriangle(x, y - half, x + half, y, x, y + half, SH110X_WHITE);
+      display.fillTriangle(x, y - half, x - half, y, x, y + half, SH110X_WHITE);
+      break;
+    default: // soft square
+      display.fillRoundRect(x - half, y - half, w, h, 10, SH110X_WHITE);
+      break;
+  }
+
+  int ps = (int)pupilSize;
+  if (ps < 1) ps = 1;
+  if (ps > 12) ps = 12;
+  switch (pupilStyle) {
+    case 0:
+      break;
+    case 1:
+      display.fillCircle(x, y, ps, SH110X_BLACK);
+      break;
+    case 2:
+      display.drawCircle(x, y, ps, SH110X_BLACK);
+      if (ps > 2) display.drawCircle(x, y, ps - 1, SH110X_BLACK);
+      break;
+    case 3:
+      display.fillRect(x - ps, y - 1, ps * 2, 3, SH110X_BLACK);
+      break;
+    case 4:
+      display.fillRect(x - ps, y - 1, ps * 2, 3, SH110X_BLACK);
+      display.fillRect(x - 1, y - ps, 3, ps * 2, SH110X_BLACK);
+      break;
+    case 5:
+      display.drawLine(x - ps, y, x + ps, y, SH110X_BLACK);
+      display.drawLine(x, y - ps, x, y + ps, SH110X_BLACK);
+      display.fillCircle(x, y, ps / 2 > 0 ? ps / 2 : 1, SH110X_BLACK);
+      break;
+    default:
+      display.fillCircle(x, y, ps, SH110X_BLACK);
+      break;
+  }
+}
+
+void drawCornerLabel(const char* text, int x, int y, bool rightAlign) {
+  if (!text || !text[0]) return;
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+  if (rightAlign) {
+    int16_t bx, by;
+    uint16_t bw, bh;
+    display.getTextBounds(text, 0, 0, &bx, &by, &bw, &bh);
+    display.setCursor(x - (int)bw, y);
+  } else {
+    display.setCursor(x, y);
+  }
+  display.print(text);
+}
+
+void drawFragments(int cx, int cy, int spread) {
+  for (int i = 0; i < 12; i++) {
+    int dx = random(-spread, spread);
+    int dy = random(-spread, spread);
+    display.fillCircle(cx + dx, cy + dy, 2, SH110X_WHITE);
+  }
+}
+
+void showSwitchScreen() {
+  display.clearDisplay();
+  display.setTextColor(SH110X_WHITE);
+  display.setTextSize(1);
+
+  // Wrap programmed text into up to 4 lines of 21 chars (128px / 6)
+  const char* src = switchScreenText;
+  if (!src[0]) src = "JEREMY CO";
+  int line = 0;
+  int col = 0;
+  char row[22];
+  row[0] = 0;
+  for (int i = 0; src[i] && line < 4; i++) {
+    char c = src[i];
+    if (c == '\n' || col >= 21) {
+      row[col] = 0;
+      display.setCursor(0, 8 + line * 12);
+      display.print(row);
+      line++;
+      col = 0;
+      row[0] = 0;
+      if (c == '\n') continue;
+    }
+    if (c >= 32 && c <= 126) {
+      row[col++] = c;
+      row[col] = 0;
+    }
+  }
+  if (col > 0 && line < 4) {
+    display.setCursor(0, 8 + line * 12);
+    display.print(row);
+  }
+  display.display();
+}
+
+bool switchIsOn() {
+  // Closed switch pulls D25 to GND (LOW). Pins are identical — either wire to D25 / GND.
+  return digitalRead(switchPin) == LOW;
+}
+
+void loadSwitchProgram() {
+  String t = prefs.getString("swText", "JEREMY CO");
+  t.trim();
+  if (t.length() == 0) t = "JEREMY CO";
+  if (t.length() > 32) t = t.substring(0, 32);
+  strncpy(switchScreenText, t.c_str(), sizeof(switchScreenText) - 1);
+  switchScreenText[sizeof(switchScreenText) - 1] = 0;
+  switchLedBlue = prefs.getBool("swBlue", true);
+  switchLedRed = prefs.getBool("swRed", true);
+  switchLedYellow = prefs.getBool("swYellow", true);
+}
+
+void saveSwitchProgram() {
+  prefs.putString("swText", switchScreenText);
+  prefs.putBool("swBlue", switchLedBlue);
+  prefs.putBool("swRed", switchLedRed);
+  prefs.putBool("swYellow", switchLedYellow);
+}
+
+static void copyCorner(char* dest, size_t n, const String& src) {
+  String t = src;
+  t.replace("|", " ");
+  t.replace("\r", "");
+  t.replace("\n", " ");
+  t.trim();
+  if (t.length() > 8) t = t.substring(0, 8);
+  strncpy(dest, t.c_str(), n - 1);
+  dest[n - 1] = 0;
+}
+
+void loadLookProgram() {
+  eyeShape = (uint8_t)prefs.getUChar("eyeShape", 2);
+  pupilStyle = (uint8_t)prefs.getUChar("pupilStyle", 1);
+  pupilSize = (uint8_t)prefs.getUChar("pupilSize", 4);
+  if (eyeShape > 5) eyeShape = 2;
+  if (pupilStyle > 5) pupilStyle = 1;
+  if (pupilSize < 2) pupilSize = 2;
+  if (pupilSize > 10) pupilSize = 10;
+  copyCorner(cornerTL, sizeof(cornerTL), prefs.getString("cTL", ""));
+  copyCorner(cornerTR, sizeof(cornerTR), prefs.getString("cTR", ""));
+  copyCorner(cornerBL, sizeof(cornerBL), prefs.getString("cBL", ""));
+  copyCorner(cornerBR, sizeof(cornerBR), prefs.getString("cBR", ""));
+  lookShowUptime = prefs.getBool("lookUp", true);
+}
+
+void saveLookProgram() {
+  prefs.putUChar("eyeShape", eyeShape);
+  prefs.putUChar("pupilStyle", pupilStyle);
+  prefs.putUChar("pupilSize", pupilSize);
+  prefs.putString("cTL", cornerTL);
+  prefs.putString("cTR", cornerTR);
+  prefs.putString("cBL", cornerBL);
+  prefs.putString("cBR", cornerBR);
+  prefs.putBool("lookUp", lookShowUptime);
+}
+
+static void sanitizeSwitchText(String& t) {
+  t.replace("|", " ");
+  t.replace("\r", "");
+  t.replace("\n", " ");
+  t.trim();
+  if (t.length() > 32) t = t.substring(0, 32);
+  if (t.length() == 0) t = "JEREMY CO";
+}
+
+// Raw-line handler (preserves text case)
+void handleUsbRawLine(const String& raw) {
+  String line = raw;
+  line.trim();
+  if (line.length() == 0) return;
+
+  String up = line;
+  up.toUpperCase();
+
+  if (up == "HELLO" || up == "PING") {
+    Serial.print("JEREMY_OK|");
+    Serial.println(FIRMWARE_VERSION);
+    return;
+  }
+  if (up == "GETSWITCH") {
+    Serial.print("SWITCH|");
+    Serial.print(switchScreenText);
+    Serial.print("|");
+    Serial.print(switchLedBlue ? 1 : 0);
+    Serial.print("|");
+    Serial.print(switchLedRed ? 1 : 0);
+    Serial.print("|");
+    Serial.println(switchLedYellow ? 1 : 0);
+    return;
+  }
+  if (up == "GETLOOK") {
+    Serial.print("LOOK|");
+    Serial.print(eyeShape);
+    Serial.print("|");
+    Serial.print(pupilStyle);
+    Serial.print("|");
+    Serial.print(pupilSize);
+    Serial.print("|");
+    Serial.print(cornerTL);
+    Serial.print("|");
+    Serial.print(cornerTR);
+    Serial.print("|");
+    Serial.print(cornerBL);
+    Serial.print("|");
+    Serial.print(cornerBR);
+    Serial.print("|");
+    Serial.println(lookShowUptime ? 1 : 0);
+    return;
+  }
+  if (up.startsWith("SETLOOK|")) {
+    // SETLOOK|shape|pupil|size|tl|tr|bl|br|uptime
+    int p[9];
+    p[0] = line.indexOf('|');
+    for (int i = 1; i < 9; i++) {
+      p[i] = (p[i - 1] >= 0) ? line.indexOf('|', p[i - 1] + 1) : -1;
+    }
+    // Need 8 pipes → indices 0..7 at minimum; uptime is after p[7]
+    if (p[0] < 0 || p[1] < 0 || p[2] < 0 || p[3] < 0 || p[4] < 0 || p[5] < 0 || p[6] < 0 || p[7] < 0) {
+      Serial.println("ERR|BAD_SETLOOK");
+      return;
+    }
+    eyeShape = (uint8_t)constrain(line.substring(p[0] + 1, p[1]).toInt(), 0, 5);
+    pupilStyle = (uint8_t)constrain(line.substring(p[1] + 1, p[2]).toInt(), 0, 5);
+    pupilSize = (uint8_t)constrain(line.substring(p[2] + 1, p[3]).toInt(), 2, 10);
+    copyCorner(cornerTL, sizeof(cornerTL), line.substring(p[3] + 1, p[4]));
+    copyCorner(cornerTR, sizeof(cornerTR), line.substring(p[4] + 1, p[5]));
+    copyCorner(cornerBL, sizeof(cornerBL), line.substring(p[5] + 1, p[6]));
+    copyCorner(cornerBR, sizeof(cornerBR), line.substring(p[6] + 1, p[7]));
+    lookShowUptime = line.substring(p[7] + 1).toInt() != 0;
+    saveLookProgram();
+    Serial.print("LOOKOK|");
+    Serial.println(FIRMWARE_VERSION);
+    return;
+  }
+  if (up.startsWith("SETSW|")) {
+    // SETSW|B|R|Y|text  — text keeps original case from `line`
+    int p1 = line.indexOf('|');
+    int p2 = line.indexOf('|', p1 + 1);
+    int p3 = line.indexOf('|', p2 + 1);
+    int p4 = line.indexOf('|', p3 + 1);
+    if (p1 < 0 || p2 < 0 || p3 < 0 || p4 < 0) {
+      Serial.println("ERR|BAD_SETSW");
+      return;
+    }
+    switchLedBlue = line.substring(p1 + 1, p2).toInt() != 0;
+    switchLedRed = line.substring(p2 + 1, p3).toInt() != 0;
+    switchLedYellow = line.substring(p3 + 1, p4).toInt() != 0;
+    String text = line.substring(p4 + 1);
+    sanitizeSwitchText(text);
+    strncpy(switchScreenText, text.c_str(), sizeof(switchScreenText) - 1);
+    switchScreenText[sizeof(switchScreenText) - 1] = 0;
+    saveSwitchProgram();
+    Serial.print("OK|");
+    Serial.println(switchScreenText);
+    return;
+  }
+  if (up == "SAVE") {
+    saveSwitchProgram();
+    Serial.println("SAVED");
+    return;
+  }
+  Serial.println("ERR|UNKNOWN");
+}
+
+void serviceUsbProgrammer() {
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (usbLineBuf.length() > 0) {
+        handleUsbRawLine(usbLineBuf);
+        usbLineBuf = "";
+      }
+    } else if (usbLineBuf.length() < 160) {
+      usbLineBuf += c;
+    }
+  }
+}
+
+// delay() blocks USB replies — Maker pings during boot after port.open() resets the ESP
+void delayServicingUsb(unsigned long ms) {
+  unsigned long start = millis();
+  while (millis() - start < ms) {
+    serviceUsbProgrammer();
+    delay(20);
+  }
+}
+
+void drawEyes(float s) {
+  display.clearDisplay();
+  if (s > 1) {
+    drawEye(leftX + ox, centerY + oy, s);
+    drawEye(rightX + ox, centerY + oy, s);
+  }
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+
+  if (cornerTL[0]) {
+    drawCornerLabel(cornerTL, 0, 0, false);
+  } else if (lookShowUptime) {
+    unsigned long sec = millis() / 1000UL;
+    unsigned long hrs = sec / 3600UL;
+    unsigned long mins = (sec / 60UL) % 60UL;
+    unsigned long secs = sec % 60UL;
+    char upBuf[16];
+    if (hrs > 0) snprintf(upBuf, sizeof(upBuf), "%luh%lum", hrs, mins);
+    else if (mins > 0) snprintf(upBuf, sizeof(upBuf), "%lum%lus", mins, secs);
+    else snprintf(upBuf, sizeof(upBuf), "%lus", secs);
+    drawCornerLabel(upBuf, 0, 0, false);
+  }
+
+  if (cornerTR[0]) {
+    drawCornerLabel(cornerTR, 128, 0, true);
+  } else {
+    int16_t bx, by;
+    uint16_t bw, bh;
+    display.getTextBounds(LABEL_TEXT, 0, 0, &bx, &by, &bw, &bh);
+    display.setCursor(128 - (int)bw - 1, 0);
+    display.print(LABEL_TEXT);
+  }
+
+  if (cornerBL[0]) drawCornerLabel(cornerBL, 0, 56, false);
+  if (cornerBR[0]) drawCornerLabel(cornerBR, 128, 56, true);
+
+  display.display();
+}
+
+void showPairingScreen() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+
+  // y>=8 avoids SH1106 top-row clip — this screen is mandatory until Auth Bot
+  display.setCursor(0, 8);
+  display.println("AUTH REQUIRED");
+  display.setCursor(0, 20);
+  display.print("WIFI:");
+  String ss = String(wifiSsid);
+  ss.toUpperCase();
+  if (ss.length() > 14) ss = ss.substring(0, 14);
+  display.println(ss);
+  display.setCursor(0, 32);
+  display.println("OPEN JEREMY:8080");
+  display.setCursor(0, 44);
+  display.print("CODE:");
+  if (pairingCode[0]) display.print(pairingCode);
+  else display.print("----");
+  if ((millis() / 500) % 2 == 0) {
+    display.setCursor(0, 56);
+    display.print("NO SKIP");
+  }
+  display.display();
+}
+
+void openControlPanel() {
+  mintNewPanelCode(); // previous panel codes are dead after this
+  state = INFO_SCREEN;
+}
+
+void showInfoScreen() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+
+  display.setCursor(0, 8);
+  display.println("CONTROL PANEL");
+  display.setCursor(0, 20);
+  display.print("V");
+  display.println(FIRMWARE_VERSION);
+  display.setCursor(0, 32);
+  display.print("WIFI:");
+  String ss = String(wifiSsid);
+  ss.toUpperCase();
+  display.println(ss);
+  display.setCursor(0, 44);
+  display.print("CODE:");
+  display.println(panelCode);
+  if ((millis() / 500) % 2 == 0) {
+    display.setCursor(0, 56);
+    display.println("[EXIT]");
+  }
+  display.display();
+}
+
+void pickTarget() {
+  tx = random(-34, 35);
+  ty = random(-22, 23);
+}
+
+void spamRandomCode(unsigned long duration) {
+  unsigned long start = millis();
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+  int maxDots = 3;
+  int dotCount = 0;
+
+  while (millis() - start < duration) {
+    display.clearDisplay();
+    dnsServer.processNextRequest();
+    server.handleClient();
+    serviceUsbProgrammer();
+
+    dotCount = (dotCount + 1) % (maxDots + 1);
+    String line = "CFW LOADING";
+    for (int i = 0; i < dotCount; i++) line += "_";
+    display.setCursor(10, 28);
+    display.print(line);
+    display.display();
+    delayServicingUsb(200);
+  }
+}
+
+void tickSparks(float gravity) {
+  for (int i = 0; i < MAX_SPARKS; i++) {
+    if (!sparks[i].alive) continue;
+    sparks[i].x += sparks[i].vx;
+    sparks[i].y += sparks[i].vy;
+    sparks[i].vy += gravity;
+    sparks[i].life--;
+    if (sparks[i].life <= 0 || sparks[i].x < -2 || sparks[i].x > 130 ||
+        sparks[i].y < -2 || sparks[i].y > 70) {
+      sparks[i].alive = false;
+    }
+  }
+}
+
+void drawSparks() {
+  for (int i = 0; i < MAX_SPARKS; i++) {
+    if (!sparks[i].alive) continue;
+    int r = (sparks[i].life > 20) ? 2 : 1;
+    display.fillCircle((int)sparks[i].x, (int)sparks[i].y, r, SH110X_WHITE);
+  }
+}
+
+bool anySparksAlive() {
+  for (int i = 0; i < MAX_SPARKS; i++) if (sparks[i].alive) return true;
+  return false;
+}
+
+void runAnimFrame() {
+  unsigned long now = millis();
+  unsigned long elapsed = now - animStart;
+
+  if (now >= animUntil && activeAnim != ANIM_MIDNIGHT_BURST &&
+      activeAnim != ANIM_SPARK_SALUTE && activeAnim != ANIM_CONFETTI_POP) {
+    activeAnim = ANIM_NONE;
+    clearLedOverrides();
+    state = resumeAfterTransient();
+    if (state == SHOW_OVERLAY || state == PLAY_ANIM) state = isPaired ? NORMAL : PAIRING;
+    return;
+  }
+
+  display.clearDisplay();
+
+  switch (activeAnim) {
+    case ANIM_LED_STROBE: {
+      bool on = ((elapsed / 80) % 2) == 0;
+      ledOverride = redOverride = yellowOverride = true;
+      ledOverrideOn = redOverrideOn = yellowOverrideOn = on;
+      setBlue(on);
+      setRed(on);
+      setYellow(on);
+      display.setTextSize(2);
+      display.setTextColor(SH110X_WHITE);
+      display.setCursor(18, 24);
+      display.print(on ? "STROBE" : "      ");
+      break;
+    }
+    case ANIM_MIDNIGHT_BURST: {
+      // New Cycle fireworks — Vector-style salute, Jeremy branded
+      pulseAllLeds(elapsed, 120);
+
+      if (elapsed < 900) {
+        // rocket climb
+        int rocketY = 56 - (int)(elapsed / 18);
+        display.fillRect(62, rocketY, 3, 8, SH110X_WHITE);
+        display.drawPixel(63, rocketY - 2, SH110X_WHITE);
+      } else if (elapsed < 1100 && !anySparksAlive()) {
+        spawnBurst(64, 18, 18, 2.8f);
+      } else if (elapsed > 1800 && elapsed < 2000) {
+        spawnBurst(32, 22, 10, 2.2f);
+        spawnBurst(96, 26, 10, 2.2f);
+      } else if (elapsed > 2800 && elapsed < 3000) {
+        spawnBurst(64, 30, 14, 2.0f);
+      }
+
+      tickSparks(0.06f);
+      drawSparks();
+
+      display.setTextSize(1);
+      display.setTextColor(SH110X_WHITE);
+      if (elapsed > 3200) {
+        display.setCursor(16, 28);
+        display.print("NEW CYCLE");
+        display.setCursor(28, 42);
+        display.print("JEREMY");
+      }
+
+      if (elapsed > 4500 && !anySparksAlive()) {
+        activeAnim = ANIM_NONE;
+        clearLedOverrides();
+        state = resumeAfterTransient();
+      }
+      break;
+    }
+    case ANIM_SPARK_SALUTE: {
+      pulseAllLeds(elapsed, 90);
+      if ((elapsed % 400) < 40) spawnBurst(20 + random(0, 90), 20 + random(0, 20), 6, 1.8f);
+      tickSparks(0.05f);
+      drawSparks();
+      drawIcon16(ICON_BURST, 48, 16, 2);
+      if (elapsed > 3200) {
+        activeAnim = ANIM_NONE;
+        clearLedOverrides();
+        state = resumeAfterTransient();
+      }
+      break;
+    }
+    case ANIM_ORBIT_BLINK: {
+      float ang = elapsed / 180.0f;
+      float r = 18;
+      int cx = 64 + (int)(cosf(ang) * r);
+      int cy = 32 + (int)(sinf(ang) * r * 0.55f);
+      drawEye(cx - 18, 32, 18 + 4 * sinf(ang * 2));
+      drawEye(cx + 18, 32, 18 + 4 * cosf(ang * 2));
+      if (((elapsed / 200) % 5) == 0) {
+        // blink lids
+        display.fillRect(cx - 30, 28, 60, 8, SH110X_BLACK);
+      }
+      pulseAllLeds(elapsed, 80);
+      break;
+    }
+    case ANIM_EYE_WIGGLE: {
+      float w = sinf(elapsed / 70.0f) * 14;
+      float h = cosf(elapsed / 90.0f) * 8;
+      drawEye(leftX + (int)w, centerY + (int)h, BASE);
+      drawEye(rightX - (int)w, centerY - (int)h, BASE);
+      pulseAllLeds(elapsed, 70);
+      break;
+    }
+    case ANIM_CONFETTI_POP: {
+      if ((elapsed % 200) < 30) {
+        for (int k = 0; k < 4; k++) {
+          spawnBurst(random(10, 118), random(8, 50), 1, 1.2f);
+        }
+      }
+      tickSparks(0.08f);
+      drawSparks();
+      display.setTextSize(1);
+      display.setCursor(34, 28);
+      display.print("POP!");
+      setAllLeds(((elapsed / 90) % 2) == 0);
+      if (elapsed > 2800) {
+        activeAnim = ANIM_NONE;
+        clearLedOverrides();
+        state = resumeAfterTransient();
+      }
+      break;
+    }
+    case ANIM_BOOM: {
+      // All three LEDs strobe hard — hardware boom pulse already fired
+      setAllLeds(((elapsed / 50) % 2) == 0);
+      digitalWrite(boomPin, LOW); // keep trigger off after pulse
+      display.setTextSize(2);
+      display.setTextColor(SH110X_WHITE);
+      display.setCursor(28, 22);
+      display.print("BOOM");
+      if ((elapsed % 100) < 50) {
+        display.fillCircle(20, 16, 4, SH110X_WHITE);
+        display.fillCircle(108, 48, 5, SH110X_WHITE);
+        display.fillCircle(64, 8, 3, SH110X_WHITE);
+      }
+      if (elapsed > 900) {
+        activeAnim = ANIM_NONE;
+        clearLedOverrides();
+        digitalWrite(boomPin, LOW);
+        state = resumeAfterTransient();
+      }
+      break;
+    }
+    default:
+      activeAnim = ANIM_NONE;
+      clearLedOverrides();
+      state = resumeAfterTransient();
+      break;
+  }
+
+  display.display();
+}
+
+bool initOled() {
+  // SDA=21 SCL=22 on most ESP32 DevKit boards
+  Wire.begin(21, 22);
+  delay(250); // battery rails need longer to settle
+  Wire.setClock(100000); // slower I2C = happier OLED on weak batteries
+
+  bool ok = display.begin(0x3C, true);
+  if (!ok) {
+    ok = display.begin(0x3D, true); // some modules use 0x3D
+  }
+  if (!ok) return false;
+
+  display.setRotation(0);
+  display.invertDisplay(false);
+  display.setContrast(255);
+  display.clearDisplay();
+  display.display();
+  delay(50);
+  display.clearDisplay();
+  display.display();
+  return true;
+}
+
+void hardenBatteryPower() {
+  // Stop brownout freezes when USB is yanked or AAA pack sags
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  setCpuFrequencyMhz(160); // less current than 240 MHz
+}
+
+void setup() {
+  hardenBatteryPower();
+  Serial.begin(115200);
+  delay(50);
+  // Announce ASAP — Web Serial open resets the board; Maker is already pinging
+  Serial.print("JEREMY_OK|");
+  Serial.println(FIRMWARE_VERSION);
+  pinMode(bootPin, INPUT_PULLUP);
+  pinMode(funButton, INPUT_PULLDOWN);
+  pinMode(switchPin, INPUT_PULLUP); // open=OFF (HIGH), closed to GND=ON (LOW)
+  pinMode(powerPin, OUTPUT);
+  pinMode(boomPin, OUTPUT);
+  digitalWrite(boomPin, LOW);
+  digitalWrite(powerPin, HIGH);
+  setupLedPwm();
+    setBlue(false);
+  setRed(false);
+  setYellow(false);
+  delay(300); // wait for VIN/battery before touching OLED/WiFi
+
+  testLedsBoot();
+
+  if (!initOled()) {
+    // Keep running WiFi even if screen fails — LED blink means OLED init failed
+    for (int i = 0; i < 10; i++) {
+      setBlue(true); delay(100); setBlue(false); delay(100);
+    }
+  }
+
+  randomSeed(esp_random());
+  buildUniqueSsid();
+  clearSparks();
+  overlayText[0] = '\0';
+  overlayImage[0] = '\0';
+
+  prefs.begin("jeremy", false);
+  loadSwitchProgram();
+  loadLookProgram();
+
+  // Auth gate rev 1: first boot / this firmware always requires AUTH screen once.
+  // Clears stale "paired" from older builds so the OLED is not skipped.
+  const int AUTH_GATE_REV = 1;
+  int authGate = prefs.getInt("authGate", 0);
+  if (authGate < AUTH_GATE_REV) {
+    prefs.putBool("paired", false);
+    prefs.putBool("needPair", true);
+    prefs.putBool("panelOn", false);
+    prefs.remove("pairCode");
+    prefs.remove("panelCode");
+    prefs.putInt("authGate", AUTH_GATE_REV);
+  }
+
+  isPaired = prefs.getBool("paired", false);
+  needPairingScreen = !isPaired; // first boot / unpaired → always auth
+
+  pairingCode[0] = '\0';
+  panelCode[0] = '\0';
+  panelCodeActive = false;
+
+  if (!isPaired) {
+    String savedPair = prefs.getString("pairCode", "");
+    if (savedPair.length() >= 4) {
+      strncpy(pairingCode, savedPair.c_str(), sizeof(pairingCode) - 1);
+      pairingCode[sizeof(pairingCode) - 1] = '\0';
+    } else {
+      generateCode(pairingCode, sizeof(pairingCode));
+      prefs.putString("pairCode", pairingCode);
+    }
+  } else {
+    // Already authenticated on a previous boot — restore panel session only
+    String savedPanel = prefs.getString("panelCode", "");
+    if (savedPanel.length() >= 4) {
+      strncpy(panelCode, savedPanel.c_str(), sizeof(panelCode) - 1);
+      panelCode[sizeof(panelCode) - 1] = '\0';
+      panelCodeActive = true;
+      prefs.putBool("panelOn", true);
+    } else {
+      mintNewPanelCode();
+    }
+  }
+
+  setupWifiAndServer();
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SH110X_WHITE);
+  display.setCursor(10, 28);
+  display.print("VERSION: 2.6.50");
+  display.display();
+  delayServicingUsb(VERSION_DELAY);
+
+  display.clearDisplay();
+  display.setCursor(4, 20);
+  display.println("PRIVATE TEST UNIT");
+  display.setCursor(16, 36);
+  display.println("JEREMY CORP LTD");
+  display.display();
+  delayServicingUsb(2000);
+
+  spamRandomCode(CODE_SPAM_DELAY);
+
+  ox = oy = 0;
+  startupTime = millis();
+  pickTarget();
+
+  if (!isPaired) {
+    state = PAIRING;
+    showPairingScreen(); // unskippable auth screen on first boot
+  } else {
+    state = NORMAL;
+  }
+}
+
+void loop() {
+  dnsServer.processNextRequest();
+  server.handleClient();
+  serviceUsbProgrammer();
+
+  static bool prevBoot = false;
+  bool bootDown = (digitalRead(bootPin) == LOW);
+  unsigned long now = millis();
+  enforceLedSafety(now);
+
+  // Power switch ON → programmed screen text + selected LEDs until OFF
+  if (switchIsOn()) {
+    prevBoot = bootDown;
+    waitingSecondClick = false;
+    forcePop = false;
+    activeAnim = ANIM_NONE;
+    overlayUntil = 0;
+    digitalWrite(boomPin, LOW);
+    clearLedOverrides();
+    holdSwitchProgramUntilOff();
+    return;
+  }
+
+  if (state != PLAY_ANIM) {
+    if (!ledOverride) setBlue(bootDown);
+    else setBlue(ledOverrideOn);
+    if (redOverride) setRed(redOverrideOn);
+    if (yellowOverride) setYellow(yellowOverrideOn);
+  }
+
+  // UNSKIPPABLE AUTH: first boot / unpaired — boot button cannot leave this screen
+  if (!isPaired) {
+    state = PAIRING;
+    prevBoot = bootDown;
+    waitingSecondClick = false;
+    forcePop = false;
+    activeAnim = ANIM_NONE;
+    overlayUntil = 0;
+    digitalWrite(boomPin, LOW);
+    showPairingScreen();
+    delay(30);
+    return;
+  }
+
+  if (bootDown && !prevBoot) {
+    if (state == INFO_SCREEN) {
+      state = NORMAL;
+      waitingSecondClick = false;
+    } else if (state == SHOW_OVERLAY || state == PLAY_ANIM) {
+      overlayUntil = 0;
+      activeAnim = ANIM_NONE;
+      clearLedOverrides();
+      state = resumeAfterTransient();
+      waitingSecondClick = false;
+    } else if (waitingSecondClick && (now - lastPressTime < DOUBLE_CLICK_WINDOW)) {
+      waitingSecondClick = false;
+      openControlPanel();
+    } else {
+      waitingSecondClick = true;
+      lastPressTime = now;
+    }
+  }
+  prevBoot = bootDown;
+
+  if (waitingSecondClick && (now - lastPressTime > DOUBLE_CLICK_WINDOW)) {
+    waitingSecondClick = false;
+  }
+
+  if (state == SHOW_OVERLAY) {
+    if (now >= overlayUntil) {
+      state = resumeAfterTransient();
+      if (state == SHOW_OVERLAY || state == PLAY_ANIM) state = NORMAL;
+    } else {
+      renderOverlay();
+      delay(30);
+      return;
+    }
+  }
+
+  if (state == PLAY_ANIM) {
+    runAnimFrame();
+    delay(30);
+    return;
+  }
+
+  if (now - startupTime < STARTUP_DELAY && state != INFO_SCREEN) {
+    drawEyes(size);
+    delay(30);
+    return;
+  }
+
+  if (state == INFO_SCREEN) {
+    showInfoScreen();
+    delay(30);
+    return;
+  }
+
+  if (forcePop) {
+    forcePop = false;
+    size = OVER;
+    popTime = now;
+    state = EXPLODE;
+    setAllLeds(true);
+  }
+
+  ox += ((tx - ox) * MOVE_EASE);
+  oy += ((ty - oy) * MOVE_EASE);
+  driftAngle += 0.02;
+  ox += cos(driftAngle) * 0.4;
+  oy += sin(driftAngle * 0.8) * 0.4;
+  if (!random(0, 45)) pickTarget();
+
+  float half = size * 0.5 + 2;
+  ox = __C(ox, -leftX + half, 128 - rightX - half);
+  oy = __C(oy, -centerY + half, 64 - centerY - half);
+
+  switch ((int)state) {
+    case NORMAL:
+      size = __B(size, BASE);
+      if (bootDown) { pressStart = now; state = HOLDING; }
+      break;
+    case HOLDING:
+      size = __B(size, GROW);
+      if (!bootDown) state = NORMAL;
+      if (size > GROW - 1) state = STRETCH;
+      break;
+    case STRETCH:
+      size += ((OVER - size) * 0.3);
+      if (size > OVER - 1) { popTime = now; state = EXPLODE; }
+      break;
+    case EXPLODE:
+      display.clearDisplay();
+      __F(2) { drawFragments((_ ? rightX : leftX) + ox, centerY + oy, 16); }
+      display.display();
+      setAllLeds(((now - popTime) / 40) % 2 == 0);
+      if (now - popTime > 140) { size = 0; state = REBUILD; clearLedOverrides(); }
+      delay(30);
+      return;
+    case REBUILD:
+      size += ((BASE - size) * 0.15);
+      if (size > BASE - 1) state = NORMAL;
+      break;
+    default:
+      state = NORMAL;
+      break;
+  }
+
+  if (digitalRead(funButton) == HIGH) {
+    const char* scrollText = "  TEST FUNCTION  ";
+    int textWidth = (int)strlen(scrollText) * 6;
+    display.setTextSize(1);
+    display.setTextColor(SH110X_WHITE);
+    for (int x = 128; x > -textWidth; x -= 3) {
+      dnsServer.processNextRequest();
+      server.handleClient();
+      display.clearDisplay();
+      display.setCursor(x, 28);
+      display.print(scrollText);
+      display.display();
+      delay(20);
+      if (digitalRead(funButton) == LOW) break;
+    }
+  }
+
+  drawEyes(size);
+  delay(30);
+}

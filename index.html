@@ -3,91 +3,138 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Jeremy Maker</title>
-  <meta name="description" content="Program what Jeremy does when you flick the switch — plug in over USB and download." />
+  <title>Jeremy Studio</title>
+  <meta name="description" content="Design Jeremy’s face, corners, lights, and switch program — then download over USB." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <div class="grain" aria-hidden="true"></div>
+  <div class="atmosphere" aria-hidden="true"></div>
 
-  <header class="top">
-    <div class="brand-lockup">
-      <span class="brand">JEREMY</span>
-      <span class="brand-sub">MAKER</span>
+  <header class="shell-top">
+    <div class="identity">
+      <p class="corp">Jeremy Corp</p>
+      <h1 class="wordmark">JEREMY</h1>
+      <p class="product">Studio — face, corners, switch</p>
     </div>
-    <p class="tagline">Same idea as micro:bit MakeCode — stack what happens, plug Jeremy in, download.</p>
-    <div class="actions">
-      <button type="button" id="btnConnect" class="btn btn-ghost">
+    <div class="toolbar">
+      <button type="button" id="btnConnect" class="btn btn-quiet">
         <span class="dot" id="connDot"></span>
-        <span id="connLabel">Find plugged-in Jeremy</span>
+        <span id="connLabel">Connect USB</span>
       </button>
-      <button type="button" id="btnFlash" class="btn btn-primary" disabled>
-        Download to Jeremy
-      </button>
+      <button type="button" id="btnFlash" class="btn btn-solid" disabled>Download to device</button>
     </div>
-    <p class="status" id="statusLine">Waiting for USB… plug the ESP32 in, then click Find.</p>
   </header>
 
-  <main class="workspace">
-    <aside class="toolbox">
-      <h2>Blocks</h2>
-      <p class="hint">Drag onto the board (or click to add).</p>
-      <button type="button" class="palette-block when" data-add="when-switch" draggable="true">
-        when switch flicked
-      </button>
-      <p class="soon">More blocks later — lights &amp; screen text ship first.</p>
-    </aside>
+  <p class="status" id="statusLine">Connect Jeremy over USB (Chrome / Edge). Close Arduino Serial Monitor first.</p>
 
-    <section class="board" id="board" aria-label="Program board">
-      <div class="board-empty" id="boardEmpty">
-        Drop <strong>when switch flicked</strong> here to start.
-      </div>
-      <div class="stack hidden" id="stack">
-        <div class="block when" id="whenBlock">
-          <div class="block-hat">when switch flicked</div>
-          <div class="block-body">
-            <div class="slot">
-              <label class="slot-label">screen text</label>
-              <input id="screenText" type="text" maxlength="32" value="JEREMY CO" spellcheck="false" />
-            </div>
-            <div class="slot">
-              <label class="slot-label">lights</label>
-              <div class="lights" role="group" aria-label="LED lights">
-                <label class="light blue"><input type="checkbox" id="ledBlue" checked /> Blue</label>
-                <label class="light red"><input type="checkbox" id="ledRed" checked /> Red</label>
-                <label class="light yellow"><input type="checkbox" id="ledYellow" checked /> Yellow</label>
-              </div>
-            </div>
-          </div>
+  <main class="studio">
+    <section class="stage" aria-label="OLED preview">
+      <div class="stage-frame">
+        <div class="stage-meta">
+          <span>SH1106 · 128×64</span>
+          <span id="stageMode">Idle face</span>
         </div>
-      </div>
-    </section>
-
-    <aside class="preview">
-      <h2>Live preview</h2>
-      <div class="oled" aria-hidden="true">
-        <pre id="oledText">JEREMY CO</pre>
-        <div class="leds">
+        <canvas id="oled" width="128" height="64" aria-label="Live OLED preview"></canvas>
+        <div class="led-row" aria-hidden="true">
           <span class="led blue on" id="prevBlue"></span>
           <span class="led red on" id="prevRed"></span>
           <span class="led yellow on" id="prevYellow"></span>
         </div>
       </div>
-      <ol class="steps">
-        <li>Flash base firmware once (BOT_CODE 2.6.41+) with Arduino.</li>
-        <li>Plug Jeremy in over USB.</li>
-        <li>Edit the switch block.</li>
-        <li>Download — Maker finds the port and writes the program.</li>
-      </ol>
-    </aside>
+      <div class="mode-toggle" role="tablist" aria-label="Preview mode">
+        <button type="button" class="mode on" data-mode="idle" id="modeIdle">Idle face</button>
+        <button type="button" class="mode" data-mode="switch" id="modeSwitch">Switch on</button>
+      </div>
+    </section>
+
+    <section class="panels" aria-label="Editors">
+      <article class="panel">
+        <header>
+          <h2>Eyes</h2>
+          <p>Shape the sockets and the asset inside each one.</p>
+        </header>
+        <label class="field">
+          <span>Shape</span>
+          <select id="eyeShape">
+            <option value="0">Circle</option>
+            <option value="1">Square</option>
+            <option value="2" selected>Soft square</option>
+            <option value="3">Wide</option>
+            <option value="4">Tall</option>
+            <option value="5">Diamond</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Pupil / asset</span>
+          <select id="pupilStyle">
+            <option value="0">None (blank eye)</option>
+            <option value="1" selected>Dot</option>
+            <option value="2">Ring</option>
+            <option value="3">Bar</option>
+            <option value="4">Cross</option>
+            <option value="5">Spark</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Asset size <em id="pupilSizeLabel">4</em></span>
+          <input id="pupilSize" type="range" min="2" max="10" value="4" />
+        </label>
+      </article>
+
+      <article class="panel">
+        <header>
+          <h2>Corners</h2>
+          <p>Short labels in each corner of the screen. Leave blank to hide.</p>
+        </header>
+        <div class="corners">
+          <label class="field">
+            <span>Top left</span>
+            <input id="cornerTL" type="text" maxlength="8" placeholder="uptime" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>Top right</span>
+            <input id="cornerTR" type="text" maxlength="8" placeholder="label" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>Bottom left</span>
+            <input id="cornerBL" type="text" maxlength="8" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>Bottom right</span>
+            <input id="cornerBR" type="text" maxlength="8" spellcheck="false" />
+          </label>
+        </div>
+        <label class="check">
+          <input type="checkbox" id="showUptime" checked />
+          <span>Show live uptime when top-left is empty</span>
+        </label>
+      </article>
+
+      <article class="panel">
+        <header>
+          <h2>Switch program</h2>
+          <p>What runs while the power switch is on.</p>
+        </header>
+        <label class="field">
+          <span>Screen text</span>
+          <input id="screenText" type="text" maxlength="32" value="JEREMY CO" spellcheck="false" />
+        </label>
+        <fieldset class="lights">
+          <legend>Lights</legend>
+          <label class="check light-b"><input type="checkbox" id="ledBlue" checked /> Blue</label>
+          <label class="check light-r"><input type="checkbox" id="ledRed" checked /> Red</label>
+          <label class="check light-y"><input type="checkbox" id="ledYellow" checked /> Yellow</label>
+        </fieldset>
+      </article>
+    </section>
   </main>
 
-  <footer class="foot">
-    <span>USB serial · 115200 · needs Chrome / Edge</span>
-    <a href="https://github.com/" id="zipHint">Deploy this folder to Vercel</a>
+  <footer class="shell-foot">
+    <span>USB 115200 · Chrome / Edge · firmware 2.6.50+</span>
+    <span>Looks and switch programs save on-device</span>
   </footer>
 
   <script src="./app.js"></script>

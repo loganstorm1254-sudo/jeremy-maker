@@ -1,19 +1,28 @@
 (() => {
   const $ = (id) => document.getElementById(id);
 
-  const board = $("board");
-  const boardEmpty = $("boardEmpty");
-  const stack = $("stack");
+  const canvas = $("oled");
+  const ctx = canvas.getContext("2d");
   const statusLine = $("statusLine");
   const connDot = $("connDot");
   const connLabel = $("connLabel");
   const btnConnect = $("btnConnect");
   const btnFlash = $("btnFlash");
+  const stageMode = $("stageMode");
+
+  const eyeShape = $("eyeShape");
+  const pupilStyle = $("pupilStyle");
+  const pupilSize = $("pupilSize");
+  const pupilSizeLabel = $("pupilSizeLabel");
+  const cornerTL = $("cornerTL");
+  const cornerTR = $("cornerTR");
+  const cornerBL = $("cornerBL");
+  const cornerBR = $("cornerBR");
+  const showUptime = $("showUptime");
   const screenText = $("screenText");
   const ledBlue = $("ledBlue");
   const ledRed = $("ledRed");
   const ledYellow = $("ledYellow");
-  const oledText = $("oledText");
   const prevBlue = $("prevBlue");
   const prevRed = $("prevRed");
   const prevYellow = $("prevYellow");
@@ -25,10 +34,11 @@
   /** @type {WritableStreamDefaultWriter | null} */
   let writer = null;
   let readLoopActive = false;
-  let programOnBoard = false;
   let lineBuffer = "";
   /** @type {Array<(line: string) => void>} */
   let lineWaiters = [];
+  let previewMode = "idle";
+  let uptimeTick = 0;
 
   const hasSerial = "serial" in navigator;
 
@@ -39,49 +49,222 @@
   function setConnected(on, label) {
     connDot.classList.toggle("on", on);
     connLabel.textContent = label;
-    btnFlash.disabled = !on || !programOnBoard;
+    btnFlash.disabled = !on;
+  }
+
+  function scrub(s, max) {
+    return String(s || "")
+      .replace(/\|/g, " ")
+      .replace(/[\r\n]+/g, " ")
+      .trim()
+      .slice(0, max);
+  }
+
+  function readState() {
+    return {
+      eyeShape: Number(eyeShape.value) || 0,
+      pupilStyle: Number(pupilStyle.value) || 0,
+      pupilSize: Number(pupilSize.value) || 4,
+      cornerTL: scrub(cornerTL.value, 8),
+      cornerTR: scrub(cornerTR.value, 8),
+      cornerBL: scrub(cornerBL.value, 8),
+      cornerBR: scrub(cornerBR.value, 8),
+      showUptime: showUptime.checked,
+      screenText: scrub(screenText.value, 32) || "JEREMY CO",
+      ledBlue: ledBlue.checked,
+      ledRed: ledRed.checked,
+      ledYellow: ledYellow.checked,
+    };
+  }
+
+  function applyState(s) {
+    if (s.eyeShape != null) eyeShape.value = String(s.eyeShape);
+    if (s.pupilStyle != null) pupilStyle.value = String(s.pupilStyle);
+    if (s.pupilSize != null) pupilSize.value = String(s.pupilSize);
+    if (s.cornerTL != null) cornerTL.value = s.cornerTL;
+    if (s.cornerTR != null) cornerTR.value = s.cornerTR;
+    if (s.cornerBL != null) cornerBL.value = s.cornerBL;
+    if (s.cornerBR != null) cornerBR.value = s.cornerBR;
+    if (s.showUptime != null) showUptime.checked = !!s.showUptime;
+    if (s.screenText != null) screenText.value = s.screenText;
+    if (s.ledBlue != null) ledBlue.checked = !!s.ledBlue;
+    if (s.ledRed != null) ledRed.checked = !!s.ledRed;
+    if (s.ledYellow != null) ledYellow.checked = !!s.ledYellow;
+    pupilSizeLabel.textContent = pupilSize.value;
+    syncPreview();
+  }
+
+  function drawEye(cx, cy, size, shape, pupil, pSize) {
+    const half = size / 2;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    if (shape === 0) {
+      ctx.arc(cx, cy, half, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (shape === 1) {
+      ctx.fillRect(cx - half, cy - half, size, size);
+    } else if (shape === 3) {
+      roundRect(cx - half - 4, cy - half + 2, size + 8, size - 4, 5);
+      ctx.fill();
+    } else if (shape === 4) {
+      roundRect(cx - half + 2, cy - half - 2, size - 4, size + 4, 5);
+      ctx.fill();
+    } else if (shape === 5) {
+      ctx.moveTo(cx, cy - half);
+      ctx.lineTo(cx + half, cy);
+      ctx.lineTo(cx, cy + half);
+      ctx.lineTo(cx - half, cy);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      roundRect(cx - half, cy - half, size, size, 8);
+      ctx.fill();
+    }
+
+    if (pupil === 0) return;
+    ctx.fillStyle = "#000";
+    ctx.strokeStyle = "#000";
+    ctx.lineWidth = 1.5;
+    const ps = pSize;
+    if (pupil === 1) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, ps, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (pupil === 2) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, ps, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (pupil === 3) {
+      ctx.fillRect(cx - ps, cy - 1, ps * 2, 3);
+    } else if (pupil === 4) {
+      ctx.fillRect(cx - ps, cy - 1, ps * 2, 3);
+      ctx.fillRect(cx - 1, cy - ps, 3, ps * 2);
+    } else if (pupil === 5) {
+      ctx.beginPath();
+      ctx.moveTo(cx - ps, cy);
+      ctx.lineTo(cx + ps, cy);
+      ctx.moveTo(cx, cy - ps);
+      ctx.lineTo(cx, cy + ps);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx, cy, Math.max(1, ps / 2), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function roundRect(x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  function drawCorner(text, x, y, align) {
+    if (!text) return;
+    ctx.fillStyle = "#fff";
+    ctx.font = "8px monospace";
+    ctx.textBaseline = "top";
+    ctx.textAlign = align;
+    ctx.fillText(text, x, y);
+  }
+
+  function formatUptime(sec) {
+    const hrs = Math.floor(sec / 3600);
+    const mins = Math.floor(sec / 60) % 60;
+    const secs = sec % 60;
+    if (hrs > 0) return `${hrs}h${mins}m`;
+    if (mins > 0) return `${mins}m${secs}s`;
+    return `${secs}s`;
+  }
+
+  function wrapText(text, maxCols, maxLines) {
+    const lines = [];
+    let row = "";
+    for (const ch of text) {
+      if (row.length >= maxCols) {
+        lines.push(row);
+        row = "";
+        if (lines.length >= maxLines) break;
+      }
+      row += ch;
+    }
+    if (row && lines.length < maxLines) lines.push(row);
+    return lines;
+  }
+
+  function paintIdle(s) {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, 128, 64);
+    const size = 22;
+    drawEye(40, 32, size, s.eyeShape, s.pupilStyle, s.pupilSize);
+    drawEye(88, 32, size, s.eyeShape, s.pupilStyle, s.pupilSize);
+
+    const tl = s.cornerTL || (s.showUptime ? formatUptime(uptimeTick) : "");
+    const tr = s.cornerTR || "";
+    drawCorner(tl, 1, 1, "left");
+    drawCorner(tr, 127, 1, "right");
+    drawCorner(s.cornerBL, 1, 56, "left");
+    drawCorner(s.cornerBR, 127, 56, "right");
+  }
+
+  function paintSwitch(s) {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, 128, 64);
+    ctx.fillStyle = "#fff";
+    ctx.font = "10px monospace";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    const lines = wrapText(s.screenText, 16, 4);
+    lines.forEach((line, i) => ctx.fillText(line, 4, 10 + i * 12));
   }
 
   function syncPreview() {
-    const text = (screenText.value || "JEREMY CO").slice(0, 32);
-    oledText.textContent = text;
-    prevBlue.classList.toggle("on", ledBlue.checked);
-    prevRed.classList.toggle("on", ledRed.checked);
-    prevYellow.classList.toggle("on", ledYellow.checked);
-    btnFlash.disabled = !port || !programOnBoard;
+    const s = readState();
+    pupilSizeLabel.textContent = String(s.pupilSize);
+    prevBlue.classList.toggle("on", s.ledBlue);
+    prevRed.classList.toggle("on", s.ledRed);
+    prevYellow.classList.toggle("on", s.ledYellow);
+    stageMode.textContent = previewMode === "idle" ? "Idle face" : "Switch on";
+    if (previewMode === "switch") paintSwitch(s);
+    else paintIdle(s);
+    btnFlash.disabled = !port;
   }
 
-  function placeProgram() {
-    programOnBoard = true;
-    boardEmpty.classList.add("hidden");
-    stack.classList.remove("hidden");
-    syncPreview();
-    setStatus("Program ready — plug Jeremy in and download when you’re set.");
-  }
-
-  document.querySelectorAll("[data-add='when-switch']").forEach((el) => {
-    el.addEventListener("click", placeProgram);
-    el.addEventListener("dragstart", (e) => {
-      e.dataTransfer.setData("text/plain", "when-switch");
-      e.dataTransfer.effectAllowed = "copy";
+  document.querySelectorAll(".mode").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      previewMode = btn.dataset.mode || "idle";
+      document.querySelectorAll(".mode").forEach((b) => b.classList.toggle("on", b === btn));
+      syncPreview();
     });
   });
 
-  board.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    board.classList.add("drag-over");
-  });
-  board.addEventListener("dragleave", () => board.classList.remove("drag-over"));
-  board.addEventListener("drop", (e) => {
-    e.preventDefault();
-    board.classList.remove("drag-over");
-    if (e.dataTransfer.getData("text/plain") === "when-switch") placeProgram();
-  });
-
-  [screenText, ledBlue, ledRed, ledYellow].forEach((el) => {
+  [
+    eyeShape,
+    pupilStyle,
+    pupilSize,
+    cornerTL,
+    cornerTR,
+    cornerBL,
+    cornerBR,
+    showUptime,
+    screenText,
+    ledBlue,
+    ledRed,
+    ledYellow,
+  ].forEach((el) => {
     el.addEventListener("input", syncPreview);
     el.addEventListener("change", syncPreview);
   });
+
+  setInterval(() => {
+    uptimeTick += 1;
+    if (previewMode === "idle" && showUptime.checked && !cornerTL.value.trim()) {
+      syncPreview();
+    }
+  }, 1000);
 
   function delay(ms) {
     return new Promise((r) => setTimeout(r, ms));
@@ -126,7 +309,8 @@
       } catch (_) {}
     }
     port = null;
-    setConnected(false, "Find plugged-in Jeremy");
+    setConnected(false, "Connect USB");
+    syncPreview();
   }
 
   async function readLoop() {
@@ -147,11 +331,12 @@
           if (line) onDeviceLine(line);
         }
       }
-    } catch (err) {
+    } catch (_) {
       if (readLoopActive) {
         setStatus("USB disconnected — plug Jeremy back in.");
-        setConnected(false, "Find plugged-in Jeremy");
+        setConnected(false, "Connect USB");
         port = null;
+        syncPreview();
       }
     } finally {
       try {
@@ -161,25 +346,45 @@
     }
   }
 
+  function parsePipe(line) {
+    return line.split("|");
+  }
+
   function onDeviceLine(line) {
-    // Wake anyone waiting on a prefix first
     for (const w of [...lineWaiters]) w(line);
 
     if (line.startsWith("JEREMY_OK|")) {
       const ver = line.split("|")[1] || "?";
-      setStatus(`Linked to Jeremy ${ver}. Ready to download.`);
+      setStatus(`Linked · firmware ${ver}`);
     } else if (line.startsWith("OK|")) {
-      setStatus(`Downloaded. Switch text is now “${line.slice(3)}”. Flick the switch to try it.`);
+      setStatus(`Saved. Switch text is “${line.slice(3)}”.`);
+    } else if (line.startsWith("LOOKOK|")) {
+      setStatus("Face look saved on device.");
     } else if (line.startsWith("SWITCH|")) {
-      const parts = line.split("|");
-      if (parts.length >= 5) {
-        screenText.value = parts[1].slice(0, 32);
-        ledBlue.checked = parts[2] === "1";
-        ledRed.checked = parts[3] === "1";
-        ledYellow.checked = parts[4] === "1";
-        if (!programOnBoard) placeProgram();
-        else syncPreview();
-        setStatus("Loaded current program from Jeremy.");
+      const p = parsePipe(line);
+      if (p.length >= 5) {
+        applyState({
+          screenText: p[1].slice(0, 32),
+          ledBlue: p[2] === "1",
+          ledRed: p[3] === "1",
+          ledYellow: p[4] === "1",
+        });
+      }
+    } else if (line.startsWith("LOOK|")) {
+      const p = parsePipe(line);
+      // LOOK|shape|pupil|size|tl|tr|bl|br|uptime
+      if (p.length >= 9) {
+        applyState({
+          eyeShape: Number(p[1]) || 0,
+          pupilStyle: Number(p[2]) || 0,
+          pupilSize: Number(p[3]) || 4,
+          cornerTL: p[4] || "",
+          cornerTR: p[5] || "",
+          cornerBL: p[6] || "",
+          cornerBR: p[7] || "",
+          showUptime: p[8] === "1",
+        });
+        setStatus("Loaded look from Jeremy.");
       }
     } else if (line.startsWith("ERR|")) {
       setStatus(`Device error: ${line}`);
@@ -196,12 +401,10 @@
       const remembered = await navigator.serial.getPorts();
       if (remembered.length === 1) return remembered[0];
     }
-    // No vendor filter — ESP32 boards use many USB chips
     return await navigator.serial.requestPort();
   }
 
   async function openPort(p) {
-    // Already open in this tab (stale handle) — close first
     if (p.readable || p.writable) {
       try {
         await p.close();
@@ -214,63 +417,49 @@
   function friendlyOpenError(err) {
     const msg = err && err.message ? err.message : String(err);
     if (/Failed to open serial port|NetworkError|InvalidStateError/i.test(msg)) {
-      return (
-        "COM port busy — close Arduino Serial Monitor (and any other serial app), " +
-        "unplug/replug USB, then Find again. Only one program can use the port."
-      );
+      return "COM port busy — close Arduino Serial Monitor, unplug/replug USB, then Connect again.";
     }
     if (/No port selected|NotFoundError/i.test(msg)) {
-      return "No port picked — plug Jeremy in, then try Find again.";
+      return "No port picked — plug Jeremy in, then try Connect again.";
     }
     return msg;
   }
 
-  /** Keep pinging until Jeremy answers (USB open reboots the ESP; boot can take ~8–15s). */
   async function handshake(timeoutMs = 18000) {
     const deadline = Date.now() + timeoutMs;
     let attempt = 0;
     while (Date.now() < deadline) {
       attempt += 1;
       const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-      setStatus(`Waiting for Jeremy after USB reset… ${left}s (${attempt})`);
+      setStatus(`Waiting for boot after USB reset… ${left}s (${attempt})`);
       await writeLine("HELLO");
       try {
-        const line = await waitForPrefix("JEREMY_OK|", 350);
-        return line;
-      } catch (_) {
-        // retry — board may still be in boot animation / WiFi bring-up
-      }
+        return await waitForPrefix("JEREMY_OK|", 350);
+      } catch (_) {}
     }
-    throw new Error(
-      "No reply from Jeremy. Flash BOT_CODE 2.6.43+ and keep USB plugged in, then try again."
-    );
+    throw new Error("No reply. Flash BOT_CODE 2.6.50+, close Serial Monitor, try again.");
   }
 
   async function connect() {
     if (!hasSerial) {
-      setStatus("This browser can’t use USB serial. Open in Chrome or Edge on desktop.");
+      setStatus("Web Serial needs Chrome or Edge on a computer.");
       return;
     }
     btnConnect.disabled = true;
     try {
       if (port) await disconnect();
-
       setStatus("Pick Jeremy’s USB port…");
       port = await pickPort(false);
-
       try {
         await openPort(port);
-      } catch (openErr) {
-        // Remembered port often stays locked after Arduino upload — force picker + retry once
-        setStatus("Port busy — pick the COM port again (close Serial Monitor first)…");
+      } catch (_) {
+        setStatus("Port busy — pick COM again (close Serial Monitor first)…");
         try {
           await port.close();
         } catch (_) {}
         port = await pickPort(true);
         await openPort(port);
       }
-
-      // Avoid holding DTR/RTS high (can keep some boards in reset / slow reconnect)
       try {
         await port.setSignals({ dataTerminalReady: false, requestToSend: false });
       } catch (_) {}
@@ -279,72 +468,74 @@
       lineBuffer = "";
       readLoop();
 
-      setStatus("USB open resets Jeremy — waiting for boot…");
       const hello = await handshake(18000);
       const ver = hello.split("|")[1] || "?";
-      setConnected(true, "Jeremy linked");
-      setStatus(`Linked to Jeremy ${ver}. Ready to download.`);
+      setConnected(true, "Connected");
+      setStatus(`Linked · firmware ${ver}`);
 
+      await writeLine("GETLOOK");
+      try {
+        await waitForPrefix("LOOK|", 2000);
+      } catch (_) {}
       await writeLine("GETSWITCH");
       try {
         await waitForPrefix("SWITCH|", 2000);
-      } catch (_) {
-        // fine — keep local editor values
-      }
+      } catch (_) {}
     } catch (err) {
       await disconnect();
       setStatus(friendlyOpenError(err));
     } finally {
       btnConnect.disabled = false;
+      syncPreview();
     }
   }
 
   async function flash() {
-    if (!programOnBoard) {
-      setStatus("Add the “when switch flicked” block first.");
-      return;
-    }
     btnFlash.disabled = true;
     try {
       if (!port || !writer) {
         await connect();
         if (!port) return;
       }
-
-      const text =
-        (screenText.value || "JEREMY CO")
-          .replace(/\|/g, " ")
-          .replace(/[\r\n]+/g, " ")
-          .trim()
-          .slice(0, 32) || "JEREMY CO";
-      const b = ledBlue.checked ? 1 : 0;
-      const r = ledRed.checked ? 1 : 0;
-      const y = ledYellow.checked ? 1 : 0;
-      const cmd = `SETSW|${b}|${r}|${y}|${text}`;
-
-      setStatus("Downloading…");
-      // Quick re-hello in case link went stale
+      const s = readState();
+      setStatus("Downloading look…");
       await writeLine("HELLO");
       try {
         await waitForPrefix("JEREMY_OK|", 800);
       } catch (_) {
-        setStatus("Reconnecting…");
         await handshake(8000);
       }
 
-      await writeLine(cmd);
+      const lookCmd = [
+        "SETLOOK",
+        s.eyeShape,
+        s.pupilStyle,
+        s.pupilSize,
+        s.cornerTL,
+        s.cornerTR,
+        s.cornerBL,
+        s.cornerBR,
+        s.showUptime ? 1 : 0,
+      ].join("|");
+      await writeLine(lookCmd);
+      await waitForPrefix("LOOKOK|", 3000);
+
+      const swCmd = `SETSW|${s.ledBlue ? 1 : 0}|${s.ledRed ? 1 : 0}|${s.ledYellow ? 1 : 0}|${s.screenText}`;
+      setStatus("Downloading switch program…");
+      await writeLine(swCmd);
       await waitForPrefix("OK|", 3000);
+      setStatus("Downloaded. Idle face + switch program are on Jeremy.");
     } catch (err) {
       setStatus(`Download failed: ${err.message || err}`);
       await disconnect();
     } finally {
-      btnFlash.disabled = !port || !programOnBoard;
+      btnFlash.disabled = !port;
     }
   }
 
   if (hasSerial && navigator.serial.addEventListener) {
     navigator.serial.addEventListener("connect", () => {
-      setStatus("USB device plugged in — click Find plugged-in Jeremy.");
+      setStatus("USB device attached — click Connect USB.");
     });
     navigator.serial.addEventListener("disconnect", async () => {
       if (port) {
@@ -358,15 +549,9 @@
   btnFlash.addEventListener("click", flash);
 
   if (!hasSerial) {
-    setStatus("Web Serial missing — use Chrome or Edge on a computer with USB.");
+    setStatus("Web Serial missing — use Chrome or Edge on desktop.");
     btnConnect.disabled = true;
-  } else {
-    navigator.serial.getPorts().then((ports) => {
-      if (ports.length === 1) {
-        setStatus("Jeremy USB remembered — click Find (links in a few seconds after USB reset).");
-      }
-    });
   }
 
-  placeProgram();
+  syncPreview();
 })();
