@@ -191,15 +191,38 @@
     await writer.write(new TextEncoder().encode(s + "\n"));
   }
 
-  async function pickPort() {
-    const remembered = await navigator.serial.getPorts();
-    if (remembered.length === 1) return remembered[0];
-    // No vendor filter — ESP32 boards use many USB chips; filters made picking feel “stuck”
-    try {
-      return await navigator.serial.requestPort();
-    } catch (err) {
-      throw err;
+  async function pickPort(forcePicker = false) {
+    if (!forcePicker) {
+      const remembered = await navigator.serial.getPorts();
+      if (remembered.length === 1) return remembered[0];
     }
+    // No vendor filter — ESP32 boards use many USB chips
+    return await navigator.serial.requestPort();
+  }
+
+  async function openPort(p) {
+    // Already open in this tab (stale handle) — close first
+    if (p.readable || p.writable) {
+      try {
+        await p.close();
+      } catch (_) {}
+      await delay(200);
+    }
+    await p.open({ baudRate: 115200, bufferSize: 256 });
+  }
+
+  function friendlyOpenError(err) {
+    const msg = err && err.message ? err.message : String(err);
+    if (/Failed to open serial port|NetworkError|InvalidStateError/i.test(msg)) {
+      return (
+        "COM port busy — close Arduino Serial Monitor (and any other serial app), " +
+        "unplug/replug USB, then Find again. Only one program can use the port."
+      );
+    }
+    if (/No port selected|NotFoundError/i.test(msg)) {
+      return "No port picked — plug Jeremy in, then try Find again.";
+    }
+    return msg;
   }
 
   /** Keep pinging until Jeremy answers (USB open reboots the ESP; boot can take ~8–15s). */
@@ -233,15 +256,27 @@
       if (port) await disconnect();
 
       setStatus("Pick Jeremy’s USB port…");
-      port = await pickPort();
+      port = await pickPort(false);
 
-      await port.open({ baudRate: 115200, bufferSize: 256 });
+      try {
+        await openPort(port);
+      } catch (openErr) {
+        // Remembered port often stays locked after Arduino upload — force picker + retry once
+        setStatus("Port busy — pick the COM port again (close Serial Monitor first)…");
+        try {
+          await port.close();
+        } catch (_) {}
+        port = await pickPort(true);
+        await openPort(port);
+      }
+
       // Avoid holding DTR/RTS high (can keep some boards in reset / slow reconnect)
       try {
         await port.setSignals({ dataTerminalReady: false, requestToSend: false });
       } catch (_) {}
 
       writer = port.writable.getWriter();
+      lineBuffer = "";
       readLoop();
 
       setStatus("USB open resets Jeremy — waiting for boot…");
@@ -258,12 +293,7 @@
       }
     } catch (err) {
       await disconnect();
-      const msg = err && err.message ? err.message : String(err);
-      if (/No port selected/i.test(msg)) {
-        setStatus("No port picked — plug Jeremy in, then try Find again.");
-      } else {
-        setStatus(msg);
-      }
+      setStatus(friendlyOpenError(err));
     } finally {
       btnConnect.disabled = false;
     }
