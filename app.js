@@ -219,7 +219,7 @@
       }
     }
     throw new Error(
-      "No reply from Jeremy. Flash BOT_CODE 2.6.42+ and keep USB plugged in, then try again."
+      "No reply from Jeremy. Flash BOT_CODE 2.6.43+ and keep USB plugged in, then try again."
     );
   }
 
