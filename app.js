@@ -27,6 +27,8 @@
   let readLoopActive = false;
   let programOnBoard = false;
   let lineBuffer = "";
+  /** @type {Array<(line: string) => void>} */
+  let lineWaiters = [];
 
   const hasSerial = "serial" in navigator;
 
@@ -57,7 +59,6 @@
     setStatus("Program ready — plug Jeremy in and download when you’re set.");
   }
 
-  // Toolbox: click or drag
   document.querySelectorAll("[data-add='when-switch']").forEach((el) => {
     el.addEventListener("click", placeProgram);
     el.addEventListener("dragstart", (e) => {
@@ -74,8 +75,7 @@
   board.addEventListener("drop", (e) => {
     e.preventDefault();
     board.classList.remove("drag-over");
-    const kind = e.dataTransfer.getData("text/plain");
-    if (kind === "when-switch") placeProgram();
+    if (e.dataTransfer.getData("text/plain") === "when-switch") placeProgram();
   });
 
   [screenText, ledBlue, ledRed, ledYellow].forEach((el) => {
@@ -83,8 +83,29 @@
     el.addEventListener("change", syncPreview);
   });
 
+  function delay(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  function waitForPrefix(prefix, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        lineWaiters = lineWaiters.filter((w) => w !== onLine);
+        reject(new Error(`timeout waiting for ${prefix}`));
+      }, timeoutMs);
+      function onLine(line) {
+        if (!line.startsWith(prefix)) return;
+        clearTimeout(timer);
+        lineWaiters = lineWaiters.filter((w) => w !== onLine);
+        resolve(line);
+      }
+      lineWaiters.push(onLine);
+    });
+  }
+
   async function disconnect() {
     readLoopActive = false;
+    lineWaiters = [];
     try {
       if (reader) {
         await reader.cancel().catch(() => {});
@@ -141,6 +162,9 @@
   }
 
   function onDeviceLine(line) {
+    // Wake anyone waiting on a prefix first
+    for (const w of [...lineWaiters]) w(line);
+
     if (line.startsWith("JEREMY_OK|")) {
       const ver = line.split("|")[1] || "?";
       setStatus(`Linked to Jeremy ${ver}. Ready to download.`);
@@ -164,8 +188,39 @@
 
   async function writeLine(s) {
     if (!writer) throw new Error("Not connected");
-    const encoder = new TextEncoder();
-    await writer.write(encoder.encode(s + "\n"));
+    await writer.write(new TextEncoder().encode(s + "\n"));
+  }
+
+  async function pickPort() {
+    const remembered = await navigator.serial.getPorts();
+    if (remembered.length === 1) return remembered[0];
+    // No vendor filter — ESP32 boards use many USB chips; filters made picking feel “stuck”
+    try {
+      return await navigator.serial.requestPort();
+    } catch (err) {
+      throw err;
+    }
+  }
+
+  /** Keep pinging until Jeremy answers (USB open reboots the ESP; boot can take ~8–15s). */
+  async function handshake(timeoutMs = 18000) {
+    const deadline = Date.now() + timeoutMs;
+    let attempt = 0;
+    while (Date.now() < deadline) {
+      attempt += 1;
+      const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      setStatus(`Waiting for Jeremy after USB reset… ${left}s (${attempt})`);
+      await writeLine("HELLO");
+      try {
+        const line = await waitForPrefix("JEREMY_OK|", 350);
+        return line;
+      } catch (_) {
+        // retry — board may still be in boot animation / WiFi bring-up
+      }
+    }
+    throw new Error(
+      "No reply from Jeremy. Flash BOT_CODE 2.6.42+ and keep USB plugged in, then try again."
+    );
   }
 
   async function connect() {
@@ -173,70 +228,82 @@
       setStatus("This browser can’t use USB serial. Open in Chrome or Edge on desktop.");
       return;
     }
+    btnConnect.disabled = true;
     try {
       if (port) await disconnect();
 
-      // Prefer already-authorized ports (plugged in previously)
-      const ports = await navigator.serial.getPorts();
-      if (ports.length === 1) {
-        port = ports[0];
-      } else {
-        port = await navigator.serial.requestPort({
-          filters: [
-            { usbVendorId: 0x10c4 }, // CP210x
-            { usbVendorId: 0x1a86 }, // CH340
-            { usbVendorId: 0x0403 }, // FTDI
-            { usbVendorId: 0x303a }, // Espressif
-          ],
-        });
-      }
+      setStatus("Pick Jeremy’s USB port…");
+      port = await pickPort();
 
-      await port.open({ baudRate: 115200 });
+      await port.open({ baudRate: 115200, bufferSize: 256 });
+      // Avoid holding DTR/RTS high (can keep some boards in reset / slow reconnect)
+      try {
+        await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+      } catch (_) {}
+
       writer = port.writable.getWriter();
-      setConnected(true, "Jeremy linked");
-      setStatus("Talking to Jeremy…");
       readLoop();
-      await delay(200);
-      await writeLine("HELLO");
-      await delay(150);
+
+      setStatus("USB open resets Jeremy — waiting for boot…");
+      const hello = await handshake(18000);
+      const ver = hello.split("|")[1] || "?";
+      setConnected(true, "Jeremy linked");
+      setStatus(`Linked to Jeremy ${ver}. Ready to download.`);
+
       await writeLine("GETSWITCH");
+      try {
+        await waitForPrefix("SWITCH|", 2000);
+      } catch (_) {
+        // fine — keep local editor values
+      }
     } catch (err) {
       await disconnect();
       const msg = err && err.message ? err.message : String(err);
       if (/No port selected/i.test(msg)) {
         setStatus("No port picked — plug Jeremy in, then try Find again.");
       } else {
-        setStatus(`Couldn’t open USB: ${msg}`);
+        setStatus(msg);
       }
+    } finally {
+      btnConnect.disabled = false;
     }
-  }
-
-  function delay(ms) {
-    return new Promise((r) => setTimeout(r, ms));
   }
 
   async function flash() {
-    if (!port || !writer) {
-      await connect();
-      if (!port) return;
-    }
     if (!programOnBoard) {
       setStatus("Add the “when switch flicked” block first.");
       return;
     }
-    const text = (screenText.value || "JEREMY CO")
-      .replace(/\|/g, " ")
-      .replace(/[\r\n]+/g, " ")
-      .trim()
-      .slice(0, 32) || "JEREMY CO";
-    const b = ledBlue.checked ? 1 : 0;
-    const r = ledRed.checked ? 1 : 0;
-    const y = ledYellow.checked ? 1 : 0;
-    const cmd = `SETSW|${b}|${r}|${y}|${text}`;
     btnFlash.disabled = true;
-    setStatus("Downloading program over USB…");
     try {
+      if (!port || !writer) {
+        await connect();
+        if (!port) return;
+      }
+
+      const text =
+        (screenText.value || "JEREMY CO")
+          .replace(/\|/g, " ")
+          .replace(/[\r\n]+/g, " ")
+          .trim()
+          .slice(0, 32) || "JEREMY CO";
+      const b = ledBlue.checked ? 1 : 0;
+      const r = ledRed.checked ? 1 : 0;
+      const y = ledYellow.checked ? 1 : 0;
+      const cmd = `SETSW|${b}|${r}|${y}|${text}`;
+
+      setStatus("Downloading…");
+      // Quick re-hello in case link went stale
+      await writeLine("HELLO");
+      try {
+        await waitForPrefix("JEREMY_OK|", 800);
+      } catch (_) {
+        setStatus("Reconnecting…");
+        await handshake(8000);
+      }
+
       await writeLine(cmd);
+      await waitForPrefix("OK|", 3000);
     } catch (err) {
       setStatus(`Download failed: ${err.message || err}`);
       await disconnect();
@@ -245,7 +312,6 @@
     }
   }
 
-  // Hot-plug: when a serial device appears, nudge the user
   if (hasSerial && navigator.serial.addEventListener) {
     navigator.serial.addEventListener("connect", () => {
       setStatus("USB device plugged in — click Find plugged-in Jeremy.");
@@ -265,14 +331,12 @@
     setStatus("Web Serial missing — use Chrome or Edge on a computer with USB.");
     btnConnect.disabled = true;
   } else {
-    // Auto-try previously permitted port if exactly one is remembered
     navigator.serial.getPorts().then((ports) => {
       if (ports.length === 1) {
-        setStatus("Jeremy USB remembered — click Find to reconnect, or Download.");
+        setStatus("Jeremy USB remembered — click Find (links in a few seconds after USB reset).");
       }
     });
   }
 
-  // Start with the block already placed (faster than MakeCode empty for one feature)
   placeProgram();
 })();
