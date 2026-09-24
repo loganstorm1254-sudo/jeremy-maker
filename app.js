@@ -25,7 +25,8 @@
   const prevRed = $("prevRed");
   const prevYellow = $("prevYellow");
 
-  const FIRMWARE_LABEL = "2.6.62";
+  const FIRMWARE_LABEL = "2.6.63";
+  let deviceLocked = false;
 
   /** @type {SerialPort | null} */
   let port = null;
@@ -49,7 +50,37 @@
   function setConnected(on, label) {
     connDot.classList.toggle("on", on);
     connLabel.textContent = label;
-    btnFlash.disabled = !on;
+    btnFlash.disabled = !on || deviceLocked;
+    const btnLock = $("btnLock");
+    const btnUnlock = $("btnUnlock");
+    if (btnLock) btnLock.disabled = !on;
+    if (btnUnlock) btnUnlock.disabled = !on;
+    updateLockBadge();
+  }
+
+  function updateLockBadge() {
+    const badge = $("lockBadge");
+    if (!badge) return;
+    if (!port) {
+      badge.textContent = "—";
+      badge.classList.remove("is-locked", "is-open");
+      return;
+    }
+    badge.textContent = deviceLocked ? "Locked" : "Open";
+    badge.classList.toggle("is-locked", deviceLocked);
+    badge.classList.toggle("is-open", !deviceLocked);
+    btnFlash.disabled = !port || deviceLocked;
+  }
+
+  function parseHello(line) {
+    // JEREMY_OK|ver|EDU|LOCK  or legacy JEREMY_OK|ver
+    const parts = String(line || "").split("|");
+    const ver = parts[1] || "?";
+    const lockTok = (parts[3] || parts[2] || "").toUpperCase();
+    if (lockTok === "LOCK" || lockTok === "OPEN") {
+      deviceLocked = lockTok === "LOCK";
+    }
+    return ver;
   }
 
   function scrub(s, max) {
@@ -273,13 +304,17 @@
   }
 
   function waitForPrefix(prefix, timeoutMs) {
+    return waitForAny([prefix], timeoutMs);
+  }
+
+  function waitForAny(prefixes, timeoutMs) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         lineWaiters = lineWaiters.filter((w) => w !== onLine);
-        reject(new Error(`timeout waiting for ${prefix}`));
+        reject(new Error(`timeout waiting for ${prefixes.join("/")}`));
       }, timeoutMs);
       function onLine(line) {
-        if (!line.startsWith(prefix)) return;
+        if (!prefixes.some((p) => line.startsWith(p))) return;
         clearTimeout(timer);
         lineWaiters = lineWaiters.filter((w) => w !== onLine);
         resolve(line);
@@ -311,6 +346,7 @@
       } catch (_) {}
     }
     port = null;
+    deviceLocked = false;
     setConnected(false, "Connect USB");
     syncPreview();
   }
@@ -356,8 +392,18 @@
     for (const w of [...lineWaiters]) w(line);
 
     if (line.startsWith("JEREMY_OK|")) {
-      const ver = line.split("|")[1] || "?";
-      setStatus(`Linked · firmware ${ver}`);
+      parseHello(line);
+      updateLockBadge();
+    } else if (line.startsWith("LOCKOK|")) {
+      deviceLocked = line.split("|")[1] === "1";
+      updateLockBadge();
+      setStatus(deviceLocked ? "Device locked — Studio download blocked." : "Device unlocked — download allowed.");
+    } else if (line.startsWith("ERR|LOCKED")) {
+      deviceLocked = true;
+      updateLockBadge();
+      setStatus("Device is locked — unlock with teacher PIN to download.");
+    } else if (line.startsWith("ERR|BAD_PIN")) {
+      setStatus("Wrong teacher PIN.");
     } else if (line.startsWith("OK|")) {
       setStatus(`Saved. Switch text is “${line.slice(3)}”.`);
     } else if (line.startsWith("LOOKOK|")) {
@@ -436,7 +482,7 @@
         return await waitForPrefix("JEREMY_OK|", 350);
       } catch (_) {}
     }
-    throw new Error("No reply. Flash BOT_CODE 2.6.62+, close Serial Monitor, try again.");
+    throw new Error("No reply. Flash BOT_CODE 2.6.63+, close Serial Monitor, try again.");
   }
 
   async function connect() {
@@ -468,9 +514,21 @@
       readLoop();
 
       const hello = await handshake(18000);
-      const ver = hello.split("|")[1] || "?";
+      const ver = parseHello(hello);
       setConnected(true, "Connected");
-      setStatus(`Linked · firmware ${ver}`);
+      setStatus(
+        deviceLocked
+          ? `Linked · firmware ${ver} · LOCKED (unlock with teacher PIN to download)`
+          : `Linked · firmware ${ver} · open for download`
+      );
+
+      await writeLine("GETLOCK");
+      try {
+        const lockLine = await waitForPrefix("LOCK|", 1500);
+        deviceLocked = lockLine.split("|")[1] === "1";
+        updateLockBadge();
+        btnFlash.disabled = deviceLocked;
+      } catch (_) {}
 
       await writeLine("GETLOOK");
       try {
@@ -496,13 +554,27 @@
         await connect();
         if (!port) return;
       }
+      if (deviceLocked) {
+        setStatus("Device is locked — enter teacher PIN and Unlock first.");
+        return;
+      }
       const s = readState();
       setStatus("Downloading look…");
       await writeLine("HELLO");
       try {
-        await waitForPrefix("JEREMY_OK|", 800);
+        const hello = await waitForPrefix("JEREMY_OK|", 800);
+        parseHello(hello);
+        updateLockBadge();
+        if (deviceLocked) {
+          setStatus("Device is locked — unlock with teacher PIN first.");
+          return;
+        }
       } catch (_) {
         await handshake(8000);
+        if (deviceLocked) {
+          setStatus("Device is locked — unlock with teacher PIN first.");
+          return;
+        }
       }
 
       const lookCmd = [
@@ -517,18 +589,66 @@
         s.showUptime ? 1 : 0,
       ].join("|");
       await writeLine(lookCmd);
-      await waitForPrefix("LOOKOK|", 3000);
+      const lookReply = await waitForAny(["LOOKOK|", "ERR|"], 3000);
+      if (lookReply.startsWith("ERR|LOCKED")) {
+        deviceLocked = true;
+        updateLockBadge();
+        setStatus("Device is locked — unlock with teacher PIN first.");
+        return;
+      }
+      if (lookReply.startsWith("ERR|")) {
+        throw new Error(lookReply);
+      }
 
       const swCmd = `SETSW|${s.ledBlue ? 1 : 0}|${s.ledRed ? 1 : 0}|${s.ledYellow ? 1 : 0}|${s.screenText}`;
       setStatus("Downloading switch program…");
       await writeLine(swCmd);
-      await waitForPrefix("OK|", 3000);
+      const swReply = await waitForAny(["OK|", "ERR|"], 3000);
+      if (swReply.startsWith("ERR|LOCKED")) {
+        deviceLocked = true;
+        updateLockBadge();
+        setStatus("Device is locked — unlock with teacher PIN first.");
+        return;
+      }
+      if (swReply.startsWith("ERR|")) {
+        throw new Error(swReply);
+      }
       setStatus("Downloaded. Idle face + switch program are on Jeremy.");
     } catch (err) {
       setStatus(`Download failed: ${err.message || err}`);
       await disconnect();
     } finally {
-      btnFlash.disabled = !port;
+      btnFlash.disabled = !port || deviceLocked;
+    }
+  }
+
+  async function sendLockCommand(lock) {
+    if (!port || !writer) {
+      setStatus("Connect Jeremy first.");
+      return;
+    }
+    const pinEl = $("teacherPin");
+    const pin = (pinEl && pinEl.value) || "";
+    if (!pin) {
+      setStatus("Enter teacher PIN.");
+      return;
+    }
+    try {
+      await writeLine(`${lock ? "LOCK" : "UNLOCK"}|${pin}`);
+      const reply = await waitForAny(["LOCKOK|", "ERR|"], 2500);
+      if (reply.startsWith("ERR|BAD_PIN")) {
+        setStatus("Wrong teacher PIN.");
+        return;
+      }
+      if (reply.startsWith("ERR|")) {
+        setStatus(`Lock failed: ${reply}`);
+        return;
+      }
+      deviceLocked = reply.split("|")[1] === "1";
+      updateLockBadge();
+      setStatus(deviceLocked ? "Device locked — Studio download blocked." : "Device unlocked — download allowed.");
+    } catch (err) {
+      setStatus(`Lock command failed: ${err.message || err}`);
     }
   }
 
@@ -546,6 +666,10 @@
 
   btnConnect.addEventListener("click", connect);
   btnFlash.addEventListener("click", flash);
+  const btnLock = $("btnLock");
+  const btnUnlock = $("btnUnlock");
+  if (btnLock) btnLock.addEventListener("click", () => sendLockCommand(true));
+  if (btnUnlock) btnUnlock.addEventListener("click", () => sendLockCommand(false));
 
   const PARTS_KEY = "jeremyStudioParts";
   const partScreen = $("partScreen");

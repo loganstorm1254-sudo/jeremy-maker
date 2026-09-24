@@ -1,15 +1,11 @@
-Jeremy Bot 2.6.59 — Dual boot (XP Education / Personal)
+Jeremy Bot 2.6.63 — Soft lock
 
-DUAL BOOT screen (BOOT = switch edition, wait ~4s to start):
-  EDUCATION → Windows xp Education splash, then WiFi + auth + panel
-  PERSONAL  → Windows xp Personal splash, then WiFi + auth + panel
+Teacher PIN (USB Studio): Rogue1254
+  LOCK|<pin>   — block Studio download (SETLOOK / SETSW)
+  UNLOCK|<pin> — allow download again
+  GETLOCK      — LOCK|1 or LOCK|0
 
-Both editions keep:
-  SoftAP jeremy_XXXX · http://jeremy:8080 (auth + control)
-  Double-click BOOT → control panel / fresh code
-  Eyes, switch + verity-hello, USB Studio
+Locked units still boot and run; students cannot reprogram looks/switch
+over Studio. Arduino IDE upload still possible if BOOT pin is usable.
 
-SPEAKER D26↔D27 · SWITCH D25↔GND
-
-Flash: File → Open → jeremy_bot.ino (this folder) → Upload
-Or paste BOT_CODE_2.6.59.txt
+Flash: open jeremy_bot.ino folder or paste BOT_CODE_2.6.63.txt

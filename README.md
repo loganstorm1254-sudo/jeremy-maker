@@ -13,13 +13,13 @@ On Studio, tick **OLED / LEDs / Speaker / Power switch**. Unticked parts hide fr
 
 ## Firmware
 
-Flash **BOT_CODE 2.6.62+** once with Arduino IDE, then **close Serial Monitor** before connecting Studio.
+Flash **BOT_CODE 2.6.63+** once with Arduino IDE, then **close Serial Monitor** before connecting Studio.
 
 ## USB protocol (115200)
 
 | Host → device | Device → host |
 |---------------|---------------|
-| `HELLO` | `JEREMY_OK\|2.6.62` |
+| `HELLO` | `JEREMY_OK\|2.6.63` |
 | `GETLOOK` | `LOOK\|shape\|pupil\|size\|tl\|tr\|bl\|br\|uptime` |
 | `SETLOOK\|…` | `LOOKOK\|version` |
 | `GETSWITCH` | `SWITCH\|text\|B\|R\|Y` |

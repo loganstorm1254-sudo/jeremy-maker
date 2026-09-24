@@ -25,10 +25,21 @@
         <span id="connLabel">Connect USB</span>
       </button>
       <button type="button" id="btnFlash" class="btn btn-solid" disabled>Download to device</button>
+      <span class="lock-badge" id="lockBadge" title="Device lock">—</span>
     </div>
   </header>
 
   <p class="status" id="statusLine">Pick the parts you have, then connect Jeremy over USB (Chrome / Edge).</p>
+
+  <div class="teacher-lock" id="teacherLock">
+    <label class="field field-inline">
+      <span>Teacher PIN</span>
+      <input id="teacherPin" type="password" autocomplete="off" spellcheck="false" placeholder="PIN" />
+    </label>
+    <button type="button" id="btnLock" class="btn btn-quiet" disabled>Lock device</button>
+    <button type="button" id="btnUnlock" class="btn btn-quiet" disabled>Unlock</button>
+    <p class="locked-note">Lock blocks Studio download (SETLOOK / SETSW). Does not stop Arduino USB upload if BOOT is available.</p>
+  </div>
 
   <main class="studio">
     <section class="stage" aria-label="OLED preview">
@@ -175,7 +186,7 @@
   </main>
 
   <footer class="shell-foot">
-    <span>USB 115200 · Chrome / Edge · firmware 2.6.62+</span>
+    <span>USB 115200 · Chrome / Edge · firmware 2.6.63+</span>
     <span>Parts, looks, and switch programs</span>
   </footer>
 
