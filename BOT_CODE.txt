@@ -1,7 +1,7 @@
 /*
- * Jeremy Bot 2.6.51 — SELECT ALL, COPY, PASTE into a new Arduino sketch, UPLOAD.
+ * Jeremy Bot 2.6.52 — SELECT ALL, COPY, PASTE into a new Arduino sketch, UPLOAD.
  * Board: ESP32 Dev Module (or DOIT ESP32 DEVKIT V1). Libs: Adafruit GFX, Adafruit SH110X, Adafruit BusIO.
- * USB Studio: eyes, bottom corners, switch. Uptime + version always on (safe top row).
+ * USB Studio: eyes, bottom corners, switch. Uptime + version locked at top of screen.
  */
 
 #include <Wire.h>
@@ -240,8 +240,8 @@ enum State {
 State state = PAIRING;
 State stateBeforeOverlay = NORMAL;
 
-const char* LABEL_TEXT = "2.6.51";
-const char* FIRMWARE_VERSION = "2.6.51";
+const char* LABEL_TEXT = "2.6.52";
+const char* FIRMWARE_VERSION = "2.6.52";
 
 char wifiSsid[24];
 char pairingCode[8];
@@ -1637,8 +1637,8 @@ void drawEyes(float s) {
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
 
-  // y>=8 — SH1106 clips the top rows; uptime + version are locked chrome
-  const int TOP_Y = 8;
+  // Locked chrome at the very top of the screen (2px clears SH1106 bezel clip)
+  const int TOP_Y = 2;
   unsigned long sec = millis() / 1000UL;
   unsigned long hrs = sec / 3600UL;
   unsigned long mins = (sec / 60UL) % 60UL;
@@ -2043,7 +2043,7 @@ void setup() {
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
   display.setCursor(10, 28);
-  display.print("VERSION: 2.6.51");
+  display.print("VERSION: 2.6.52");
   display.display();
   delayServicingUsb(VERSION_DELAY);
 

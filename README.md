@@ -9,7 +9,7 @@ Desktop programmer for **Jeremy** units. Design the idle face (eye shape, pupils
 
 ## Firmware
 
-Flash **BOT_CODE 2.6.51+** once with Arduino IDE, then **close Serial Monitor** before connecting Studio.
+Flash **BOT_CODE 2.6.52+** once with Arduino IDE, then **close Serial Monitor** before connecting Studio.
 
 ## USB protocol (115200)
 

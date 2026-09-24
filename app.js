@@ -25,7 +25,7 @@
   const prevRed = $("prevRed");
   const prevYellow = $("prevYellow");
 
-  const FIRMWARE_LABEL = "2.6.51";
+  const FIRMWARE_LABEL = "2.6.52";
 
   /** @type {SerialPort | null} */
   let port = null;
@@ -208,9 +208,9 @@
     drawEye(40, 32, size, s.eyeShape, s.pupilStyle, s.pupilSize);
     drawEye(88, 32, size, s.eyeShape, s.pupilStyle, s.pupilSize);
 
-    // Locked chrome — always drawn (y=8 matches SH1106 safe top)
-    drawCorner(formatUptime(uptimeTick), 1, 8, "left");
-    drawCorner(FIRMWARE_LABEL, 127, 8, "right");
+    // Locked chrome — flush to top of screen
+    drawCorner(formatUptime(uptimeTick), 1, 2, "left");
+    drawCorner(FIRMWARE_LABEL, 127, 2, "right");
     drawCorner(s.cornerBL, 1, 56, "left");
     drawCorner(s.cornerBR, 127, 56, "right");
   }
