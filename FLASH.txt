@@ -1,18 +1,15 @@
-Jeremy Bot 2.6.57 — Dual boot (Education + Personal)
+Jeremy Bot 2.6.59 — Dual boot (XP Education / Personal)
 
-On power-up you see JEREMY DUAL BOOT:
-  BOOT button = switch EDUCATION ↔ PERSONAL
-  Wait ~4s (or press the fun button) to start
-  Choice is remembered next boot (BOOT again to change)
+DUAL BOOT screen (BOOT = switch edition, wait ~4s to start):
+  EDUCATION → Windows xp Education splash, then WiFi + auth + panel
+  PERSONAL  → Windows xp Personal splash, then WiFi + auth + panel
 
-EDUCATION — same as before
-  WiFi jeremy_XXXX · http://jeremy:8080 · Auth code · Control panel
+Both editions keep:
+  SoftAP jeremy_XXXX · http://jeremy:8080 (auth + control)
+  Double-click BOOT → control panel / fresh code
+  Eyes, switch + verity-hello, USB Studio
 
-PERSONAL — local only
-  No website, no WiFi SoftAP, no auth/codes
-  Eyes + switch + verity-hello + USB Studio still work
-
-SPEAKER: D26 ↔ D27 (no GND) · SWITCH: D25 ↔ GND
+SPEAKER D26↔D27 · SWITCH D25↔GND
 
 Flash: File → Open → jeremy_bot.ino (this folder) → Upload
-Or paste BOT_CODE_2.6.57.txt
+Or paste BOT_CODE_2.6.59.txt

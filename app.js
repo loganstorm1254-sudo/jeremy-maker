@@ -25,7 +25,7 @@
   const prevRed = $("prevRed");
   const prevYellow = $("prevYellow");
 
-  const FIRMWARE_LABEL = "2.6.57";
+  const FIRMWARE_LABEL = "2.6.59";
 
   /** @type {SerialPort | null} */
   let port = null;
@@ -436,7 +436,7 @@
         return await waitForPrefix("JEREMY_OK|", 350);
       } catch (_) {}
     }
-    throw new Error("No reply. Flash BOT_CODE 2.6.57+, close Serial Monitor, try again.");
+    throw new Error("No reply. Flash BOT_CODE 2.6.59+, close Serial Monitor, try again.");
   }
 
   async function connect() {
