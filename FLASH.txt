@@ -1,12 +1,18 @@
-Jeremy Bot 2.6.56 — verity-hello.mp3 (normal sound)
+Jeremy Bot 2.6.57 — Dual boot (Education + Personal)
 
-SPEAKER (CQRobot enclosed) — NO GND:
-  Either pin -> D26
-  Other pin  -> D27
-  Swap if quiet. Plays verity-hello normally (loops while switch ON).
+On power-up you see JEREMY DUAL BOOT:
+  BOOT button = switch EDUCATION ↔ PERSONAL
+  Wait ~4s (or press the fun button) to start
+  Choice is remembered next boot (BOOT again to change)
 
-SWITCH:
-  Either -> D25 · Other -> GND
+EDUCATION — same as before
+  WiFi jeremy_XXXX · http://jeremy:8080 · Auth code · Control panel
 
-FLASH: File → Open → jeremy_bot.ino (this folder) → Upload
-Or paste BOT_CODE_2.6.56.txt
+PERSONAL — local only
+  No website, no WiFi SoftAP, no auth/codes
+  Eyes + switch + verity-hello + USB Studio still work
+
+SPEAKER: D26 ↔ D27 (no GND) · SWITCH: D25 ↔ GND
+
+Flash: File → Open → jeremy_bot.ino (this folder) → Upload
+Or paste BOT_CODE_2.6.57.txt
