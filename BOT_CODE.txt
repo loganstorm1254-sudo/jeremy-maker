@@ -1,7 +1,7 @@
 /*
- * Jeremy Bot 2.6.50 — SELECT ALL, COPY, PASTE into a new Arduino sketch, UPLOAD.
+ * Jeremy Bot 2.6.51 — SELECT ALL, COPY, PASTE into a new Arduino sketch, UPLOAD.
  * Board: ESP32 Dev Module (or DOIT ESP32 DEVKIT V1). Libs: Adafruit GFX, Adafruit SH110X, Adafruit BusIO.
- * USB Studio: eyes, corners, switch program. Switch ON runs switch text + lights.
+ * USB Studio: eyes, bottom corners, switch. Uptime + version always on (safe top row).
  */
 
 #include <Wire.h>
@@ -89,15 +89,16 @@ bool switchLedRed = true;
 bool switchLedYellow = true;
 String usbLineBuf;
 
-// Idle face look (eyes + corner labels) — edited in Jeremy Studio
-uint8_t eyeShape = 2;   // 0 circle 1 square 2 soft 3 wide 4 tall 5 diamond
-uint8_t pupilStyle = 1; // 0 none 1 dot 2 ring 3 bar 4 cross 5 spark
+// Idle face look (eyes + bottom corner labels) — edited in Jeremy Studio
+// Top-left uptime + top-right version are fixed in firmware (not removable)
+uint8_t eyeShape = 2;   // 0 circle 1 square 2 default/soft 3 wide 4 tall 5 diamond
+uint8_t pupilStyle = 0; // 0 none (default eyes) 1 dot 2 ring 3 bar 4 cross 5 spark
 uint8_t pupilSize = 4;
-char cornerTL[9] = "";
+char cornerTL[9] = ""; // kept for protocol compat; ignored when drawing
 char cornerTR[9] = "";
 char cornerBL[9] = "";
 char cornerBR[9] = "";
-bool lookShowUptime = true;
+bool lookShowUptime = true; // always on; field kept for protocol compat
 
 void touchLedWatchdog() {
   ledHoldUntil = millis() + LED_AUTO_OFF_MS;
@@ -239,8 +240,8 @@ enum State {
 State state = PAIRING;
 State stateBeforeOverlay = NORMAL;
 
-const char* LABEL_TEXT = "2.6.50";
-const char* FIRMWARE_VERSION = "2.6.50";
+const char* LABEL_TEXT = "2.6.51";
+const char* FIRMWARE_VERSION = "2.6.51";
 
 char wifiSsid[24];
 char pairingCode[8];
@@ -1472,17 +1473,17 @@ static void copyCorner(char* dest, size_t n, const String& src) {
 
 void loadLookProgram() {
   eyeShape = (uint8_t)prefs.getUChar("eyeShape", 2);
-  pupilStyle = (uint8_t)prefs.getUChar("pupilStyle", 1);
+  pupilStyle = (uint8_t)prefs.getUChar("pupilStyle", 0);
   pupilSize = (uint8_t)prefs.getUChar("pupilSize", 4);
   if (eyeShape > 5) eyeShape = 2;
-  if (pupilStyle > 5) pupilStyle = 1;
+  if (pupilStyle > 5) pupilStyle = 0;
   if (pupilSize < 2) pupilSize = 2;
   if (pupilSize > 10) pupilSize = 10;
   copyCorner(cornerTL, sizeof(cornerTL), prefs.getString("cTL", ""));
   copyCorner(cornerTR, sizeof(cornerTR), prefs.getString("cTR", ""));
   copyCorner(cornerBL, sizeof(cornerBL), prefs.getString("cBL", ""));
   copyCorner(cornerBR, sizeof(cornerBR), prefs.getString("cBR", ""));
-  lookShowUptime = prefs.getBool("lookUp", true);
+  lookShowUptime = true; // locked on — uptime/version always drawn
 }
 
 void saveLookProgram() {
@@ -1493,7 +1494,7 @@ void saveLookProgram() {
   prefs.putString("cTR", cornerTR);
   prefs.putString("cBL", cornerBL);
   prefs.putString("cBR", cornerBR);
-  prefs.putBool("lookUp", lookShowUptime);
+  prefs.putBool("lookUp", true); // locked
 }
 
 static void sanitizeSwitchText(String& t) {
@@ -1568,7 +1569,7 @@ void handleUsbRawLine(const String& raw) {
     copyCorner(cornerTR, sizeof(cornerTR), line.substring(p[4] + 1, p[5]));
     copyCorner(cornerBL, sizeof(cornerBL), line.substring(p[5] + 1, p[6]));
     copyCorner(cornerBR, sizeof(cornerBR), line.substring(p[6] + 1, p[7]));
-    lookShowUptime = line.substring(p[7] + 1).toInt() != 0;
+    lookShowUptime = true; // ignore host flag — uptime/version always on
     saveLookProgram();
     Serial.print("LOOKOK|");
     Serial.println(FIRMWARE_VERSION);
@@ -1636,30 +1637,27 @@ void drawEyes(float s) {
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
 
-  if (cornerTL[0]) {
-    drawCornerLabel(cornerTL, 0, 0, false);
-  } else if (lookShowUptime) {
-    unsigned long sec = millis() / 1000UL;
-    unsigned long hrs = sec / 3600UL;
-    unsigned long mins = (sec / 60UL) % 60UL;
-    unsigned long secs = sec % 60UL;
-    char upBuf[16];
-    if (hrs > 0) snprintf(upBuf, sizeof(upBuf), "%luh%lum", hrs, mins);
-    else if (mins > 0) snprintf(upBuf, sizeof(upBuf), "%lum%lus", mins, secs);
-    else snprintf(upBuf, sizeof(upBuf), "%lus", secs);
-    drawCornerLabel(upBuf, 0, 0, false);
-  }
+  // y>=8 — SH1106 clips the top rows; uptime + version are locked chrome
+  const int TOP_Y = 8;
+  unsigned long sec = millis() / 1000UL;
+  unsigned long hrs = sec / 3600UL;
+  unsigned long mins = (sec / 60UL) % 60UL;
+  unsigned long secs = sec % 60UL;
+  char upBuf[16];
+  if (hrs > 0) snprintf(upBuf, sizeof(upBuf), "%luh%lum", hrs, mins);
+  else if (mins > 0) snprintf(upBuf, sizeof(upBuf), "%lum%lus", mins, secs);
+  else snprintf(upBuf, sizeof(upBuf), "%lus", secs);
+  drawCornerLabel(upBuf, 0, TOP_Y, false);
 
-  if (cornerTR[0]) {
-    drawCornerLabel(cornerTR, 128, 0, true);
-  } else {
+  {
     int16_t bx, by;
     uint16_t bw, bh;
     display.getTextBounds(LABEL_TEXT, 0, 0, &bx, &by, &bw, &bh);
-    display.setCursor(128 - (int)bw - 1, 0);
+    display.setCursor(128 - (int)bw - 1, TOP_Y);
     display.print(LABEL_TEXT);
   }
 
+  // Custom labels only on the bottom corners
   if (cornerBL[0]) drawCornerLabel(cornerBL, 0, 56, false);
   if (cornerBR[0]) drawCornerLabel(cornerBR, 128, 56, true);
 
@@ -2045,7 +2043,7 @@ void setup() {
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
   display.setCursor(10, 28);
-  display.print("VERSION: 2.6.50");
+  display.print("VERSION: 2.6.51");
   display.display();
   delayServicingUsb(VERSION_DELAY);
 

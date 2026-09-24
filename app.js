@@ -14,11 +14,9 @@
   const pupilStyle = $("pupilStyle");
   const pupilSize = $("pupilSize");
   const pupilSizeLabel = $("pupilSizeLabel");
-  const cornerTL = $("cornerTL");
-  const cornerTR = $("cornerTR");
   const cornerBL = $("cornerBL");
   const cornerBR = $("cornerBR");
-  const showUptime = $("showUptime");
+  const btnDefaultEyes = $("btnDefaultEyes");
   const screenText = $("screenText");
   const ledBlue = $("ledBlue");
   const ledRed = $("ledRed");
@@ -26,6 +24,8 @@
   const prevBlue = $("prevBlue");
   const prevRed = $("prevRed");
   const prevYellow = $("prevYellow");
+
+  const FIRMWARE_LABEL = "2.6.51";
 
   /** @type {SerialPort | null} */
   let port = null;
@@ -65,11 +65,11 @@
       eyeShape: Number(eyeShape.value) || 0,
       pupilStyle: Number(pupilStyle.value) || 0,
       pupilSize: Number(pupilSize.value) || 4,
-      cornerTL: scrub(cornerTL.value, 8),
-      cornerTR: scrub(cornerTR.value, 8),
+      cornerTL: "",
+      cornerTR: "",
       cornerBL: scrub(cornerBL.value, 8),
       cornerBR: scrub(cornerBR.value, 8),
-      showUptime: showUptime.checked,
+      showUptime: true,
       screenText: scrub(screenText.value, 32) || "JEREMY CO",
       ledBlue: ledBlue.checked,
       ledRed: ledRed.checked,
@@ -81,17 +81,23 @@
     if (s.eyeShape != null) eyeShape.value = String(s.eyeShape);
     if (s.pupilStyle != null) pupilStyle.value = String(s.pupilStyle);
     if (s.pupilSize != null) pupilSize.value = String(s.pupilSize);
-    if (s.cornerTL != null) cornerTL.value = s.cornerTL;
-    if (s.cornerTR != null) cornerTR.value = s.cornerTR;
     if (s.cornerBL != null) cornerBL.value = s.cornerBL;
     if (s.cornerBR != null) cornerBR.value = s.cornerBR;
-    if (s.showUptime != null) showUptime.checked = !!s.showUptime;
     if (s.screenText != null) screenText.value = s.screenText;
     if (s.ledBlue != null) ledBlue.checked = !!s.ledBlue;
     if (s.ledRed != null) ledRed.checked = !!s.ledRed;
     if (s.ledYellow != null) ledYellow.checked = !!s.ledYellow;
     pupilSizeLabel.textContent = pupilSize.value;
     syncPreview();
+  }
+
+  function setDefaultEyes() {
+    eyeShape.value = "2";
+    pupilStyle.value = "0";
+    pupilSize.value = "4";
+    pupilSizeLabel.textContent = "4";
+    syncPreview();
+    setStatus("Default factory eyes selected.");
   }
 
   function drawEye(cx, cy, size, shape, pupil, pSize) {
@@ -202,10 +208,9 @@
     drawEye(40, 32, size, s.eyeShape, s.pupilStyle, s.pupilSize);
     drawEye(88, 32, size, s.eyeShape, s.pupilStyle, s.pupilSize);
 
-    const tl = s.cornerTL || (s.showUptime ? formatUptime(uptimeTick) : "");
-    const tr = s.cornerTR || "";
-    drawCorner(tl, 1, 1, "left");
-    drawCorner(tr, 127, 1, "right");
+    // Locked chrome — always drawn (y=8 matches SH1106 safe top)
+    drawCorner(formatUptime(uptimeTick), 1, 8, "left");
+    drawCorner(FIRMWARE_LABEL, 127, 8, "right");
     drawCorner(s.cornerBL, 1, 56, "left");
     drawCorner(s.cornerBR, 127, 56, "right");
   }
@@ -245,11 +250,8 @@
     eyeShape,
     pupilStyle,
     pupilSize,
-    cornerTL,
-    cornerTR,
     cornerBL,
     cornerBR,
-    showUptime,
     screenText,
     ledBlue,
     ledRed,
@@ -259,11 +261,11 @@
     el.addEventListener("change", syncPreview);
   });
 
+  btnDefaultEyes.addEventListener("click", setDefaultEyes);
+
   setInterval(() => {
     uptimeTick += 1;
-    if (previewMode === "idle" && showUptime.checked && !cornerTL.value.trim()) {
-      syncPreview();
-    }
+    if (previewMode === "idle") syncPreview();
   }, 1000);
 
   function delay(ms) {
@@ -378,11 +380,8 @@
           eyeShape: Number(p[1]) || 0,
           pupilStyle: Number(p[2]) || 0,
           pupilSize: Number(p[3]) || 4,
-          cornerTL: p[4] || "",
-          cornerTR: p[5] || "",
           cornerBL: p[6] || "",
           cornerBR: p[7] || "",
-          showUptime: p[8] === "1",
         });
         setStatus("Loaded look from Jeremy.");
       }

@@ -56,12 +56,13 @@
           <h2>Eyes</h2>
           <p>Shape the sockets and the asset inside each one.</p>
         </header>
+        <button type="button" class="btn btn-quiet btn-block" id="btnDefaultEyes">Use default eyes</button>
         <label class="field">
           <span>Shape</span>
           <select id="eyeShape">
+            <option value="2" selected>Default (factory)</option>
             <option value="0">Circle</option>
             <option value="1">Square</option>
-            <option value="2" selected>Soft square</option>
             <option value="3">Wide</option>
             <option value="4">Tall</option>
             <option value="5">Diamond</option>
@@ -70,8 +71,8 @@
         <label class="field">
           <span>Pupil / asset</span>
           <select id="pupilStyle">
-            <option value="0">None (blank eye)</option>
-            <option value="1" selected>Dot</option>
+            <option value="0" selected>None (default)</option>
+            <option value="1">Dot</option>
             <option value="2">Ring</option>
             <option value="3">Bar</option>
             <option value="4">Cross</option>
@@ -86,18 +87,10 @@
 
       <article class="panel">
         <header>
-          <h2>Corners</h2>
-          <p>Short labels in each corner of the screen. Leave blank to hide.</p>
+          <h2>Bottom corners</h2>
+          <p>Uptime (top left) and version (top right) are fixed on every unit. Add optional labels below.</p>
         </header>
         <div class="corners">
-          <label class="field">
-            <span>Top left</span>
-            <input id="cornerTL" type="text" maxlength="8" placeholder="uptime" spellcheck="false" />
-          </label>
-          <label class="field">
-            <span>Top right</span>
-            <input id="cornerTR" type="text" maxlength="8" placeholder="label" spellcheck="false" />
-          </label>
           <label class="field">
             <span>Bottom left</span>
             <input id="cornerBL" type="text" maxlength="8" spellcheck="false" />
@@ -107,10 +100,7 @@
             <input id="cornerBR" type="text" maxlength="8" spellcheck="false" />
           </label>
         </div>
-        <label class="check">
-          <input type="checkbox" id="showUptime" checked />
-          <span>Show live uptime when top-left is empty</span>
-        </label>
+        <p class="locked-note">Top left = live uptime · Top right = firmware version</p>
       </article>
 
       <article class="panel">
@@ -133,7 +123,7 @@
   </main>
 
   <footer class="shell-foot">
-    <span>USB 115200 · Chrome / Edge · firmware 2.6.50+</span>
+    <span>USB 115200 · Chrome / Edge · firmware 2.6.51+</span>
     <span>Looks and switch programs save on-device</span>
   </footer>
 
