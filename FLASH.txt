@@ -1,0 +1,28 @@
+Jeremy Bot 2.6.54 — Verity speaker on switch
+
+PINS
+----
+Power switch (2 identical pins):
+  Either pin -> D25
+  Other pin  -> GND
+  ON = screen text + lights + Verity song until OFF
+
+Speaker (2 wires — NO board GND; swap if quiet):
+  Either pin -> D26
+  Other pin  -> D27
+
+LEDs (no GND, 2 pins each):
+  BLUE   LONG->D2    SHORT->D23
+  RED    LONG->D18   SHORT->D5
+  YELLOW LONG->D19   SHORT->D13
+
+FLASH (needs this whole folder — song is in verity_pcm.cpp)
+-----------------------------------------------------------
+1. Arduino IDE → File → Open → jeremy_bot.ino  (this folder)
+2. Tools → Board → ESP32 Arduino → ESP32 Dev Module
+3. Tools → Port → your COM port
+4. Sketch → Upload
+5. Close Serial Monitor, then use Jeremy Studio over USB
+
+Default partition is fine (~360k samples @ 8kHz).
+Do NOT paste BOT_CODE alone for this build — open the folder so verity_pcm.cpp uploads with it.
