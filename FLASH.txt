@@ -1,28 +1,26 @@
-Jeremy Bot 2.6.54 — Verity speaker on switch
+Jeremy Bot 2.6.55 — Verity MAX volume (CQRobot enclosed)
 
 PINS
 ----
-Power switch (2 identical pins):
+Power switch:
   Either pin -> D25
   Other pin  -> GND
-  ON = screen text + lights + Verity song until OFF
+  ON = text + lights + Verity MAX until OFF
 
-Speaker (2 wires — NO board GND; swap if quiet):
+Speaker — CQRobot Enclosed (Amazon B0738NLFTG), NO board GND:
   Either pin -> D26
   Other pin  -> D27
+  Swap the two wires if quiet.
+  Drive = hard differential GPIO (~6.6Vpp). Bass cut in audio — volume not mud.
 
-LEDs (no GND, 2 pins each):
+LEDs (no GND):
   BLUE   LONG->D2    SHORT->D23
   RED    LONG->D18   SHORT->D5
   YELLOW LONG->D19   SHORT->D13
 
-FLASH (needs this whole folder — song is in verity_pcm.cpp)
------------------------------------------------------------
-1. Arduino IDE → File → Open → jeremy_bot.ino  (this folder)
-2. Tools → Board → ESP32 Arduino → ESP32 Dev Module
-3. Tools → Port → your COM port
-4. Sketch → Upload
-5. Close Serial Monitor, then use Jeremy Studio over USB
-
-Default partition is fine (~360k samples @ 8kHz).
-Do NOT paste BOT_CODE alone for this build — open the folder so verity_pcm.cpp uploads with it.
+FLASH
+-----
+1. Arduino → File → Open → jeremy_bot.ino (this whole folder)
+2. Board: ESP32 Dev Module · Upload
+3. Close Serial Monitor → Jeremy Studio
+Or paste BOT_CODE_2.6.55.txt (song embedded, large).
