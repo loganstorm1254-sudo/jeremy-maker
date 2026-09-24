@@ -25,7 +25,7 @@
   const prevRed = $("prevRed");
   const prevYellow = $("prevYellow");
 
-  const FIRMWARE_LABEL = "2.6.59";
+  const FIRMWARE_LABEL = "2.6.62";
 
   /** @type {SerialPort | null} */
   let port = null;
@@ -436,7 +436,7 @@
         return await waitForPrefix("JEREMY_OK|", 350);
       } catch (_) {}
     }
-    throw new Error("No reply. Flash BOT_CODE 2.6.59+, close Serial Monitor, try again.");
+    throw new Error("No reply. Flash BOT_CODE 2.6.62+, close Serial Monitor, try again.");
   }
 
   async function connect() {
@@ -546,6 +546,86 @@
 
   btnConnect.addEventListener("click", connect);
   btnFlash.addEventListener("click", flash);
+
+  const PARTS_KEY = "jeremyStudioParts";
+  const partScreen = $("partScreen");
+  const partLeds = $("partLeds");
+  const partSpeaker = $("partSpeaker");
+  const partSwitch = $("partSwitch");
+
+  function readParts() {
+    return {
+      screen: !!(partScreen && partScreen.checked),
+      leds: !!(partLeds && partLeds.checked),
+      speaker: !!(partSpeaker && partSpeaker.checked),
+      switch: !!(partSwitch && partSwitch.checked),
+    };
+  }
+
+  function saveParts(parts) {
+    try {
+      localStorage.setItem(PARTS_KEY, JSON.stringify(parts));
+    } catch (_) {}
+  }
+
+  function loadParts() {
+    try {
+      const raw = localStorage.getItem(PARTS_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function applyParts(parts) {
+    if (!parts) return;
+    if (partScreen) partScreen.checked = !!parts.screen;
+    if (partLeds) partLeds.checked = !!parts.leds;
+    if (partSpeaker) partSpeaker.checked = !!parts.speaker;
+    if (partSwitch) partSwitch.checked = !!parts.switch;
+
+    const map = {
+      screen: !!parts.screen,
+      leds: !!parts.leds,
+      speaker: !!parts.speaker,
+      switch: !!parts.switch,
+    };
+
+    document.querySelectorAll("[data-part]").forEach((node) => {
+      const key = node.getAttribute("data-part");
+      const on = map[key] !== false;
+      node.classList.toggle("is-hidden", !on);
+    });
+
+    // If switch part is off, force idle preview
+    if (!map.switch && previewMode === "switch") {
+      previewMode = "idle";
+      document.querySelectorAll(".mode").forEach((b) => {
+        b.classList.toggle("on", b.dataset.mode === "idle");
+      });
+      stageMode.textContent = "Idle face";
+    }
+    syncPreview();
+  }
+
+  function onPartsChanged() {
+    const parts = readParts();
+    saveParts(parts);
+    applyParts(parts);
+    setStatus("Parts updated — only installed sections stay visible.");
+  }
+
+  [partScreen, partLeds, partSpeaker, partSwitch].forEach((el) => {
+    if (el) el.addEventListener("change", onPartsChanged);
+  });
+
+  const savedParts = loadParts();
+  if (savedParts) {
+    applyParts(savedParts);
+  } else {
+    applyParts(readParts());
+  }
 
   if (!hasSerial) {
     setStatus("Web Serial missing — use Chrome or Edge on desktop.");

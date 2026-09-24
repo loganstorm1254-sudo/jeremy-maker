@@ -17,7 +17,7 @@
     <div class="identity">
       <p class="corp">Jeremy Corp</p>
       <h1 class="wordmark">JEREMY</h1>
-      <p class="product">Studio — face, corners, switch</p>
+      <p class="product">Studio — parts, face, switch</p>
     </div>
     <div class="toolbar">
       <button type="button" id="btnConnect" class="btn btn-quiet">
@@ -28,7 +28,7 @@
     </div>
   </header>
 
-  <p class="status" id="statusLine">Connect Jeremy over USB (Chrome / Edge). Close Arduino Serial Monitor first.</p>
+  <p class="status" id="statusLine">Pick the parts you have, then connect Jeremy over USB (Chrome / Edge).</p>
 
   <main class="studio">
     <section class="stage" aria-label="OLED preview">
@@ -38,20 +38,71 @@
           <span id="stageMode">Idle face</span>
         </div>
         <canvas id="oled" width="128" height="64" aria-label="Live OLED preview"></canvas>
-        <div class="led-row" aria-hidden="true">
+        <div class="led-row" data-part="leds" aria-hidden="true">
           <span class="led blue on" id="prevBlue"></span>
           <span class="led red on" id="prevRed"></span>
           <span class="led yellow on" id="prevYellow"></span>
         </div>
       </div>
-      <div class="mode-toggle" role="tablist" aria-label="Preview mode">
+      <div class="mode-toggle" role="tablist" aria-label="Preview mode" data-part="switch">
         <button type="button" class="mode on" data-mode="idle" id="modeIdle">Idle face</button>
         <button type="button" class="mode" data-mode="switch" id="modeSwitch">Switch on</button>
       </div>
     </section>
 
     <section class="panels" aria-label="Editors">
-      <article class="panel">
+      <article class="panel" id="panelParts">
+        <header>
+          <h2>My parts</h2>
+          <p>Tick what you built. Unticked parts hide here and skip install guides you don’t need.</p>
+        </header>
+        <div class="parts-grid">
+          <label class="check"><input type="checkbox" id="partScreen" checked /> OLED screen</label>
+          <label class="check"><input type="checkbox" id="partLeds" checked /> LEDs</label>
+          <label class="check"><input type="checkbox" id="partSpeaker" checked /> Speaker</label>
+          <label class="check"><input type="checkbox" id="partSwitch" checked /> Power switch</label>
+        </div>
+        <p class="locked-note">Choices save in this browser.</p>
+
+        <h3 class="guides-title">Install guides</h3>
+        <details class="guide" data-part="screen">
+          <summary>OLED screen</summary>
+          <ul>
+            <li>VCC → <strong>3V3</strong></li>
+            <li>GND → <strong>GND</strong></li>
+            <li>SDA → <strong>D21</strong></li>
+            <li>SCL → <strong>D22</strong></li>
+          </ul>
+          <p>128×64 SH1106. Shows eyes, uptime, version, and switch text.</p>
+        </details>
+        <details class="guide" data-part="leds">
+          <summary>LEDs</summary>
+          <ul>
+            <li>Blue long → <strong>D2</strong> · short → <strong>D23</strong></li>
+            <li>Red long → <strong>D18</strong> · short → <strong>D5</strong></li>
+            <li>Yellow long → <strong>D19</strong> · short → <strong>D13</strong></li>
+          </ul>
+          <p>No board GND on the LEDs. Prefer 220Ω on each long leg. Unplug if hot.</p>
+        </details>
+        <details class="guide" data-part="speaker">
+          <summary>Speaker</summary>
+          <ul>
+            <li>Either pin → <strong>D26</strong></li>
+            <li>Other pin → <strong>D27</strong></li>
+          </ul>
+          <p>CQRobot enclosed — no board GND. Swap wires if quiet. Plays verity-hello while switch is on.</p>
+        </details>
+        <details class="guide" data-part="switch">
+          <summary>Power switch</summary>
+          <ul>
+            <li>Either pin → <strong>D25</strong></li>
+            <li>Other pin → <strong>GND</strong></li>
+          </ul>
+          <p>Pins are identical either way. ON runs the switch program for the parts you have.</p>
+        </details>
+      </article>
+
+      <article class="panel" data-part="screen" id="panelEyes">
         <header>
           <h2>Eyes</h2>
           <p>Shape the sockets and the asset inside each one.</p>
@@ -85,7 +136,7 @@
         </label>
       </article>
 
-      <article class="panel">
+      <article class="panel" data-part="screen" id="panelCorners">
         <header>
           <h2>Bottom corners</h2>
           <p>Uptime (top left) and version (top right) are fixed on every unit. Add optional labels below.</p>
@@ -103,28 +154,29 @@
         <p class="locked-note">Top left = live uptime · Top right = firmware version</p>
       </article>
 
-      <article class="panel">
+      <article class="panel" data-part="switch" id="panelSwitch">
         <header>
           <h2>Switch program</h2>
           <p>What runs while the power switch is on.</p>
         </header>
-        <label class="field">
+        <label class="field" data-part="screen">
           <span>Screen text</span>
           <input id="screenText" type="text" maxlength="32" value="JEREMY CO" spellcheck="false" />
         </label>
-        <fieldset class="lights">
+        <fieldset class="lights" data-part="leds">
           <legend>Lights</legend>
           <label class="check light-b"><input type="checkbox" id="ledBlue" checked /> Blue</label>
           <label class="check light-r"><input type="checkbox" id="ledRed" checked /> Red</label>
           <label class="check light-y"><input type="checkbox" id="ledYellow" checked /> Yellow</label>
         </fieldset>
+        <p class="locked-note" data-part="speaker" id="speakerNote">Speaker plays verity-hello while the switch is on (D26 / D27).</p>
       </article>
     </section>
   </main>
 
   <footer class="shell-foot">
-    <span>USB 115200 · Chrome / Edge · firmware 2.6.59+</span>
-    <span>Looks and switch programs save on-device</span>
+    <span>USB 115200 · Chrome / Edge · firmware 2.6.62+</span>
+    <span>Parts, looks, and switch programs</span>
   </footer>
 
   <script src="./app.js"></script>

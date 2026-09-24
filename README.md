@@ -7,15 +7,19 @@ Desktop programmer for **Jeremy** units. Design the idle face (eye shape, pupils
 1. Import this folder as a static project (no build command).
 2. Open in **Chrome or Edge** (Web Serial required).
 
+## My parts
+
+On Studio, tick **OLED / LEDs / Speaker / Power switch**. Unticked parts hide from the page. Each part has an install guide with pin wiring. Choices save in the browser.
+
 ## Firmware
 
-Flash **BOT_CODE 2.6.54+** once with Arduino IDE, then **close Serial Monitor** before connecting Studio.
+Flash **BOT_CODE 2.6.62+** once with Arduino IDE, then **close Serial Monitor** before connecting Studio.
 
 ## USB protocol (115200)
 
 | Host → device | Device → host |
 |---------------|---------------|
-| `HELLO` | `JEREMY_OK\|2.6.54` |
+| `HELLO` | `JEREMY_OK\|2.6.62` |
 | `GETLOOK` | `LOOK\|shape\|pupil\|size\|tl\|tr\|bl\|br\|uptime` |
 | `SETLOOK\|…` | `LOOKOK\|version` |
 | `GETSWITCH` | `SWITCH\|text\|B\|R\|Y` |

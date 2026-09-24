@@ -381,6 +381,71 @@ body {
   color: var(--faint);
 }
 
+.parts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem 0.85rem;
+  margin-bottom: 0.35rem;
+}
+
+.guides-title {
+  margin: 1.1rem 0 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.guide {
+  border: 1px solid var(--stroke);
+  border-radius: 4px;
+  background: var(--panel-2);
+  margin: 0.4rem 0;
+  padding: 0.55rem 0.75rem;
+}
+
+.guide summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--signal);
+  list-style: none;
+}
+
+.guide summary::-webkit-details-marker {
+  display: none;
+}
+
+.guide[open] summary {
+  margin-bottom: 0.45rem;
+}
+
+.guide ul {
+  margin: 0.35rem 0 0.5rem;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.guide p {
+  margin: 0;
+  color: var(--faint);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.guide strong {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-weight: 500;
+}
+
+[data-part].is-hidden {
+  display: none !important;
+}
+
 .check {
   display: inline-flex;
   align-items: center;
